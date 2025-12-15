@@ -510,25 +510,32 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
         
         user_id, subject, topic, minutes, start_time = result
         
-        # به‌روزرسانی آمار کاربر
-        query = """
-        UPDATE users
-        SET 
-            total_study_time = total_study_time + %s,
-            total_sessions = total_sessions + 1
-        WHERE user_id = %s
-        """
-        db.execute_query(query, (minutes, user_id))
+        # به‌روزرسانی آمار کاربر - با کنترل خطا
+        try:
+            query = """
+            UPDATE users
+            SET 
+                total_study_time = total_study_time + %s,
+                total_sessions = total_sessions + 1
+            WHERE user_id = %s
+            """
+            db.execute_query(query, (minutes, user_id))
+        except Exception as e:
+            logger.warning(f"کاربر {user_id} در جدول users نیست: {e}")
+            # کاربر را به جدول اضافه کنیم یا فقط هشدار دهیم
         
-        # به‌روزرسانی رتبه‌بندی روزانه
-        date_str, _ = get_iran_time()
-        query = """
-        INSERT INTO daily_rankings (user_id, date, total_minutes)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (user_id, date) DO UPDATE SET
-            total_minutes = daily_rankings.total_minutes + EXCLUDED.total_minutes
-        """
-        db.execute_query(query, (user_id, date_str, minutes))
+        # به‌روزرسانی رتبه‌بندی روزانه - با کنترل خطا
+        try:
+            date_str, _ = get_iran_time()
+            query = """
+            INSERT INTO daily_rankings (user_id, date, total_minutes)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, date) DO UPDATE SET
+                total_minutes = daily_rankings.total_minutes + EXCLUDED.total_minutes
+            """
+            db.execute_query(query, (user_id, date_str, minutes))
+        except Exception as e:
+            logger.warning(f"خطا در به‌روزرسانی رتبه‌بندی: {e}")
         
         session_data = {
             "user_id": user_id,

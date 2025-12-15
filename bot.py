@@ -459,6 +459,15 @@ def get_user_info(user_id: int) -> Optional[Dict]:
 def start_study_session(user_id: int, subject: str, topic: str, minutes: int) -> Optional[int]:
     """شروع جلسه مطالعه جدید"""
     try:
+        # 👇 این بررسی را اضافه کنید
+        # بررسی وجود کاربر در جدول users
+        query_check = "SELECT user_id FROM users WHERE user_id = %s AND is_active = TRUE"
+        user_check = db.execute_query(query_check, (user_id,), fetch=True)
+        
+        if not user_check:
+            logger.error(f"کاربر {user_id} فعال نیست یا وجود ندارد")
+            return None
+        
         start_timestamp = int(time.time())
         date_str, _ = get_iran_time()
         

@@ -1091,6 +1091,7 @@ async def deactive_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except ValueError:
         await update.message.reply_text("❌ آیدی باید عددی باشد.")
 
+
 async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """افزودن فایل توسط ادمین"""
     user_id = update.effective_user.id
@@ -1099,12 +1100,12 @@ async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("❌ دسترسی denied.")
         return
     
-    if len(context.args) < 4:
+    if len(context.args) < 3:  # تغییر از ۴ به ۳
         await update.message.reply_text(
             "⚠️ فرمت صحیح:\n"
-            "/addfile <پایه> <رشته> <درس> <مبحث>\n\n"
+            "/addfile <پایه> <رشته> <درس>\n\n"  # حذف <مبحث>
             "مثال:\n"
-            "/addfile دوازدهم تجربی فیزیک دینامیک\n\n"
+            "/addfile دوازدهم تجربی فیزیک\n\n"  # حذف مبحث
             "📝 توضیح اختیاری را در خط بعدی بنویسید."
         )
         return
@@ -1112,13 +1113,13 @@ async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     grade = context.args[0]
     field = context.args[1]
     subject = context.args[2]
-    topic = " ".join(context.args[3:])
+    topic = ""  # خالی کردن مبحث
     
     context.user_data["awaiting_file"] = {
         "grade": grade,
         "field": field,
         "subject": subject,
-        "topic": topic,
+        "topic": topic,  # مبحث خالی
         "description": "",
         "uploader_id": user_id
     }
@@ -1127,8 +1128,7 @@ async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"📤 آماده آپلود فایل:\n\n"
         f"🎓 پایه: {grade}\n"
         f"🧪 رشته: {field}\n"
-        f"📚 درس: {subject}\n"
-        f"🎯 مبحث: {topic}\n\n"
+        f"📚 درس: {subject}\n"  # حذف خط مبحث
         f"📝 لطفا توضیحی برای فایل وارد کنید (اختیاری):\n"
         f"یا برای رد شدن از این مرحله /skip بزنید."
     )

@@ -1149,6 +1149,7 @@ async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # هندلرهای پیام متنی
 # -----------------------------------------------------------
 
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """پردازش پیام‌های متنی"""
     user_id = update.effective_user.id
@@ -1183,38 +1184,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "پایه\nرشته\nپیام"
             )
         return
-    
-    # زمان دلخواه برای تایمر
-    if context.user_data.get("awaiting_custom_time"):
-        try:
-            minutes = int(text)
-            if minutes < MIN_STUDY_TIME:
-                await update.message.reply_text(
-                    f"❌ زمان باید حداقل {MIN_STUDY_TIME} دقیقه باشد."
-                )
-            elif minutes > MAX_STUDY_TIME:
-                await update.message.reply_text(
-                    f"❌ زمان نباید بیشتر از {MAX_STUDY_TIME} دقیقه (۲ ساعت) باشد."
-                )
-            else:
-                context.user_data["selected_time"] = minutes
-                context.user_data["awaiting_topic"] = True
-                
-                subject = context.user_data.get("selected_subject", "نامشخص")
-                await update.message.reply_text(
-                    f"⏱ زمان انتخاب شده: {format_time(minutes)}\n\n"
-                    f"📚 درس: {subject}\n\n"
-                    f"✏️ لطفا مبحث مطالعه را وارد کنید:\n"
-                    f"(مثال: حل مسائل فصل ۳)"
-                )
-        except ValueError:
-            await update.message.reply_text(
-                "❌ لطفا یک عدد وارد کنید.\n"
-                f"(بین {MIN_STUDY_TIME} تا {MAX_STUDY_TIME} دقیقه)"
-            )
-        return
-    
-    # ورود مبحث مطالعه
+    # ۲. مبحث مطالعه (مهم: این باید قبل از awaiting_custom_time باشد)
     if context.user_data.get("awaiting_topic"):
         topic = text
         subject = context.user_data.get("selected_subject", "نامشخص")
@@ -1241,6 +1211,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 ]])
             )
             
+            # پاک کردن وضعیت
+            context.user_data.pop("awaiting_topic", None)
+            context.user_data.pop("selected_subject", None)
+            context.user_data.pop("selected_time", None)
+            
             # تنظیم تایمر برای اتمام خودکار
             context.job_queue.run_once(
                 auto_complete_study,
@@ -1254,10 +1229,46 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "لطفا مجدد تلاش کنید.",
                 reply_markup=get_main_menu()
             )
-        
-        context.user_data["awaiting_topic"] = False
         return
     
+    # ۳. زمان دلخواه (بعد از مبحث)
+    if context.user_data.get("awaiting_custom_time"):
+        try:
+            minutes = int(text)
+            if minutes < MIN_STUDY_TIME:
+                await update.message.reply_text(
+                    f"❌ زمان باید حداقل {MIN_STUDY_TIME} دقیقه باشد."
+                )
+            elif minutes > MAX_STUDY_TIME:
+                await update.message.reply_text(
+                    f"❌ زمان نباید بیشتر از {MAX_STUDY_TIME} دقیقه (۲ ساعت) باشد."
+                )
+            else:
+                context.user_data["selected_time"] = minutes
+                context.user_data["awaiting_topic"] = True  # 🔥 اینجا درست تنظیم شود
+                
+                subject = context.user_data.get("selected_subject", "نامشخص")
+                await update.message.reply_text(
+                    f"⏱ زمان انتخاب شده: {format_time(minutes)}\n\n"
+                    f"📚 درس: {subject}\n\n"
+                    f"✏️ لطفا مبحث مطالعه را وارد کنید:\n"
+                    f"(مثال: حل مسائل فصل ۳)"
+                )
+                
+                # پاک کردن وضعیت زمان
+                context.user_data.pop("awaiting_custom_time", None)
+        except ValueError:
+            await update.message.reply_text(
+                "❌ لطفا یک عدد وارد کنید.\n"
+                f"(بین {MIN_STUDY_TIME} تا {MAX_STUDY_TIME} دقیقه)"
+            )
+        return
+    
+    # ۴. اگر پیام متنی دیگر بود
+    await update.message.reply_text(
+        "لطفا از منوی ربات استفاده کنید.",
+        reply_markup=get_main_menu()
+            )
     # توضیح فایل برای آپلود توسط ادمین
     if context.user_data.get("awaiting_file_description"):
         context.user_data["awaiting_file"]["description"] = text

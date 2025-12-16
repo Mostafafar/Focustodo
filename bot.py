@@ -1,4 +1,5 @@
 import logging
+import html
 import time
 import json
 import os
@@ -1751,6 +1752,7 @@ async def show_admin_upload(query) -> None:
         ]])
     )
 
+
 async def show_admin_requests(query) -> None:
     """نمایش درخواست‌های ثبت‌نام"""
     requests = get_pending_requests()
@@ -1760,21 +1762,10 @@ async def show_admin_requests(query) -> None:
     else:
         text = f"📋 درخواست‌های در انتظار: {len(requests)}\n\n"
         for req in requests[:5]:
-            # امن کردن متن برای مارک‌داون
-            def escape_markdown(text: str) -> str:
-                if not text:
-                    return ""
-                # فرار کردن کاراکترهای خطرناک مارک‌داون
-                special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-                for char in special_chars:
-                    text = text.replace(char, '\\' + char)
-                return text
-            
-            safe_username = escape_markdown(req['username']) or "نامشخص"
-            safe_grade = escape_markdown(req['grade']) or "نامشخص"
-            safe_field = escape_markdown(req['field']) or "نامشخص"
-            safe_message = escape_markdown(req['message'])
-            
+            username = req['username'] or "نامشخص"
+            grade = req['grade'] or "نامشخص"
+            field = req['field'] or "نامشخص"
+            message = req['message'] or "بدون پیام"
             user_id = req['user_id']
             created_at = req['created_at']
             
@@ -1783,14 +1774,16 @@ async def show_admin_requests(query) -> None:
             else:
                 date_str = str(created_at)
             
-            text += f"👤 *{safe_username}*\n"
-            text += f"🆔 آیدی: `{user_id}`\n"
-            text += f"🎓 {safe_grade} \\| 🧪 {safe_field}\n"  # Escape کردن |
-            text += f"📅 {escape_markdown(date_str)}\n"
+            # استفاده از HTML برای ایمن بودن
+            text += f"👤 <b>{html.escape(username)}</b>\n"
+            text += f"🆔 آیدی: <code>{user_id}</code>\n"
+            text += f"🎓 {html.escape(grade)} | 🧪 {html.escape(field)}\n"
+            text += f"📅 {html.escape(date_str)}\n"
             
-            if safe_message:
-                text += f"📝 پیام: {safe_message[:50]}"
-                if len(safe_message) > 50:
+            if message and message.strip():
+                escaped_message = html.escape(message[:50])
+                text += f"📝 پیام: {escaped_message}"
+                if len(message) > 50:
                     text += "..."
                 text += "\n"
             
@@ -1799,8 +1792,8 @@ async def show_admin_requests(query) -> None:
     await query.edit_message_text(
         text,
         reply_markup=get_pending_requests_keyboard(),
-        parse_mode=ParseMode.MARKDOWN  # استفاده از MARKDOWN معمولی
-    )
+        parse_mode=ParseMode.HTML  # تغییر به HTML
+            )
 async def show_request_details(query, request_id: int) -> None:
     """نمایش جزئیات یک درخواست"""
     requests = get_pending_requests()
@@ -1810,22 +1803,27 @@ async def show_request_details(query, request_id: int) -> None:
         await query.answer("❌ درخواست یافت نشد.", show_alert=True)
         return
     
+    username = request['username'] or "نامشخص"
+    grade = request['grade'] or "نامشخص"
+    field = request['field'] or "نامشخص"
+    message = request['message'] or "بدون پیام"
+    
     text = (
         f"📋 جزئیات درخواست #{request_id}\n\n"
-        f"👤 کاربر: **{request['username']}**\n"
-        f"🆔 آیدی: `{request['user_id']}`\n"
-        f"🎓 پایه: {request['grade']}\n"
-        f"🧪 رشته: {request['field']}\n"
-        f"📅 تاریخ درخواست: {request['created_at'].strftime('%Y/%m/%d %H:%M')}\n\n"
+        f"👤 کاربر: <b>{html.escape(username)}</b>\n"
+        f"🆔 آیدی: <code>{request['user_id']}</code>\n"
+        f"🎓 پایه: {html.escape(grade)}\n"
+        f"🧪 رشته: {html.escape(field)}\n"
+        f"📅 تاریخ درخواست: {html.escape(request['created_at'].strftime('%Y/%m/%d %H:%M'))}\n\n"
         f"📝 پیام کاربر:\n"
-        f"_{request['message']}_\n\n"
+        f"<i>{html.escape(message)}</i>\n\n"
         f"لطفا تصمیم بگیرید:"
     )
     
     await query.edit_message_text(
         text,
         reply_markup=get_request_action_keyboard(request_id),
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.HTML  # تغییر به HTML
     )
 
 async def approve_request(query, request_id: int, admin_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:

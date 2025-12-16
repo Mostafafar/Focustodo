@@ -1761,19 +1761,22 @@ async def show_admin_requests(query) -> None:
     else:
         text = f"📋 درخواست‌های در انتظار: {len(requests)}\n\n"
         for req in requests[:5]:
-            # امن کردن username برای مارکداون
-            safe_username = "نامشخص"
-            if req['username']:
-                # فرار کردن کاراکترهای خطرناک مارکداون
-                safe_username = req['username'].replace('_', '\\_') \
-                                                 .replace('*', '\\*') \
-                                                 .replace('[', '\\[') \
-                                                 .replace(']', '\\]') \
-                                                 .replace('`', '\\`')
+            # امن کردن متن برای مارک‌داون
+            def escape_markdown(text: str) -> str:
+                if not text:
+                    return ""
+                # فرار کردن کاراکترهای خطرناک مارک‌داون
+                special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+                for char in special_chars:
+                    text = text.replace(char, '\\' + char)
+                return text
+            
+            safe_username = escape_markdown(req['username']) or "نامشخص"
+            safe_grade = escape_markdown(req['grade']) or "نامشخص"
+            safe_field = escape_markdown(req['field']) or "نامشخص"
+            safe_message = escape_markdown(req['message'])
             
             user_id = req['user_id']
-            grade = req['grade'] or "نامشخص"
-            field = req['field'] or "نامشخص"
             created_at = req['created_at']
             
             if isinstance(created_at, datetime):
@@ -1783,15 +1786,22 @@ async def show_admin_requests(query) -> None:
             
             text += f"👤 *{safe_username}*\n"
             text += f"🆔 آیدی: `{user_id}`\n"
-            text += f"🎓 {grade} | 🧪 {field}\n"
-            text += f"📅 {date_str}\n\n"
+            text += f"🎓 {safe_grade} \\| 🧪 {safe_field}\n"  # Escape کردن |
+            text += f"📅 {escape_markdown(date_str)}\n"
+            
+            if safe_message:
+                text += f"📝 پیام: {safe_message[:50]}"
+                if len(safe_message) > 50:
+                    text += "..."
+                text += "\n"
+            
+            text += "\n"
     
     await query.edit_message_text(
         text,
         reply_markup=get_pending_requests_keyboard(),
-        parse_mode=ParseMode.MARKDOWN_V2  # بهتر است از MARKDOWN_V2 استفاده کنید
+        parse_mode=ParseMode.MARKDOWN  # استفاده از MARKDOWN معمولی
     )
-
 async def show_request_details(query, request_id: int) -> None:
     """نمایش جزئیات یک درخواست"""
     requests = get_pending_requests()

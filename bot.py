@@ -648,42 +648,44 @@ def get_user_rank_today(user_id: int) -> Tuple[Optional[int], Optional[int]]:
 # مدیریت فایل‌ها
 # -----------------------------------------------------------
 
-def add_file(grade: str, field: str, subject: str, topic: str, 
-             description: str, telegram_file_id: str, file_name: str,
-             file_size: int, mime_type: str, uploader_id: int) -> Optional[Dict]:
-    """افزودن فایل جدید به دیتابیس"""
+def add_file(
+    grade: str, field: str, subject: str, topic: str, 
+    description: str, telegram_file_id: str, file_name: str,
+    file_size: int, mime_type: str, uploader_id: int
+) -> Optional[Dict]:
     try:
-        upload_date, _ = get_iran_time()
-        
         query = """
-        INSERT INTO files (grade, field, subject, topic, description, 
-                          telegram_file_id, file_name, file_size, mime_type, 
-                          upload_date, uploader_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO files (
+            grade, field, subject, topic, description, 
+            telegram_file_id, file_name, file_size, mime_type, 
+            uploader_id
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING file_id, upload_date
         """
         
         result = db.execute_query(query, (
             grade, field, subject, topic, description,
             telegram_file_id, file_name, file_size, mime_type,
-            upload_date, uploader_id
+            uploader_id
         ), fetch=True)
         
         if result:
-            file_data = {
-                "file_id": result[0],
+            file_id, upload_timestamp = result
+            
+            display_date = upload_timestamp.strftime("%Y/%m/%d")
+            
+            return {
+                "file_id": file_id,
                 "grade": grade,
                 "field": field,
                 "subject": subject,
                 "topic": topic,
-                "description": description,
+                "description": description or "",
                 "file_name": file_name,
                 "file_size": file_size,
-                "upload_date": result[1]
+                "upload_date": display_date
             }
-            
-            logger.info(f"فایل آپلود شد: {file_name} (ID: {result[0]})")
-            return file_data
         
         return None
         

@@ -1760,15 +1760,35 @@ async def show_admin_requests(query) -> None:
     else:
         text = f"📋 درخواست‌های در انتظار: {len(requests)}\n\n"
         for req in requests[:5]:
-            text += f"👤 **{req['username']}**\n"
-            text += f"🆔 آیدی: `{req['user_id']}`\n"
-            text += f"🎓 {req['grade']} | 🧪 {req['field']}\n"
-            text += f"📅 {req['created_at'].strftime('%Y/%m/%d %H:%M')}\n\n"
+            # امن کردن username برای مارکداون
+            safe_username = "نامشخص"
+            if req['username']:
+                # فرار کردن کاراکترهای خطرناک مارکداون
+                safe_username = req['username'].replace('_', '\\_') \
+                                                 .replace('*', '\\*') \
+                                                 .replace('[', '\\[') \
+                                                 .replace(']', '\\]') \
+                                                 .replace('`', '\\`')
+            
+            user_id = req['user_id']
+            grade = req['grade'] or "نامشخص"
+            field = req['field'] or "نامشخص"
+            created_at = req['created_at']
+            
+            if isinstance(created_at, datetime):
+                date_str = created_at.strftime('%Y/%m/%d %H:%M')
+            else:
+                date_str = str(created_at)
+            
+            text += f"👤 *{safe_username}*\n"
+            text += f"🆔 آیدی: `{user_id}`\n"
+            text += f"🎓 {grade} | 🧪 {field}\n"
+            text += f"📅 {date_str}\n\n"
     
     await query.edit_message_text(
         text,
         reply_markup=get_pending_requests_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.MARKDOWN_V2  # بهتر است از MARKDOWN_V2 استفاده کنید
     )
 
 async def show_request_details(query, request_id: int) -> None:

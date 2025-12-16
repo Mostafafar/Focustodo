@@ -1282,7 +1282,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"🎓 پایه: {file_info['grade']}\n"
             f"🧪 رشته: {file_info['field']}\n"
             f"📚 درس: {file_info['subject']}\n"
-            f"🎯 مبحث: {file_info['topic']}\n"
             f"📝 توضیح: {text}\n\n"
             f"📎 لطفا فایل را ارسال کنید..."
         )

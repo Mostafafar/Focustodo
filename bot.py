@@ -214,7 +214,19 @@ db = Database()
 # -----------------------------------------------------------
 # توابع کمکی
 # -----------------------------------------------------------
+def fix_text(text: str) -> str:
+    """تعمیر متن برای ارسال در تلگرام"""
+    # جایگزینی | با کاراکتر ایمن
+    text = text.replace('|', '│')  # کاراکتر خط عمودی متفاوت
+    # یا
+    # text = text.replace('|', ' - ')
+    return text
 
+# سپس در همه پیام‌ها:
+await query.edit_message_text(
+    fix_text(text),  # متن را قبل از ارسال تعمیر کن
+    reply_markup=keyboard
+)
 def get_iran_time() -> Tuple[str, str]:
     """دریافت تاریخ و زمان ایران"""
     now = datetime.now(IRAN_TZ)

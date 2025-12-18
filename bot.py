@@ -1798,6 +1798,15 @@ async def choose_subject(query) -> None:
 
 async def select_subject(query, context, subject: str) -> None:
     """ذخیره درس انتخاب شده و نمایش انتخاب زمان"""
+    if subject == "سایر":
+        # درخواست نام درس از کاربر
+        await query.edit_message_text(
+            "📝 لطفا نام درس را وارد کنید:\n"
+            "(مثال: هندسه، علوم کامپیوتر، منطق و ...)"
+        )
+        context.user_data["awaiting_custom_subject"] = True
+        return
+    
     context.user_data["selected_subject"] = subject
     
     await query.edit_message_text(
@@ -1808,7 +1817,6 @@ async def select_subject(query, context, subject: str) -> None:
         reply_markup=get_time_selection_keyboard(),
         parse_mode=ParseMode.MARKDOWN
     )
-
 async def select_time(query, context, minutes: int) -> None:
     """ذخیره زمان انتخاب شده و درخواست مبحث"""
     context.user_data["selected_time"] = minutes

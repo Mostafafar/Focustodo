@@ -1500,6 +1500,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "پایه\nرشته\nپیام"
             )
         return
+    # ۲. درس دلخواه (سایر)
+    if context.user_data.get("awaiting_custom_subject"):
+        if len(text) < 2 or len(text) > 50:
+            await update.message.reply_text(
+                "❌ نام درس باید بین ۲ تا ۵۰ کاراکتر باشد.\n"
+                "لطفا مجدد وارد کنید:"
+            )
+            return
+        
+        context.user_data["selected_subject"] = text
+        context.user_data.pop("awaiting_custom_subject", None)
+        
+        await update.message.reply_text(
+            f"✅ درس انتخاب شده: **{text}**\n\n"
+            f"⏱ لطفا مدت زمان مطالعه را انتخاب کنید:",
+            reply_markup=get_time_selection_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
     # ۲. مبحث مطالعه (مهم: این باید قبل از awaiting_custom_time باشد)
     if context.user_data.get("awaiting_topic"):
         topic = text
@@ -2408,6 +2428,7 @@ def main() -> None:
     application.add_handler(CommandHandler("skip", skip_command))
     
     # ثبت هندلرهای پیام
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CommandHandler("sessions", debug_sessions_command))

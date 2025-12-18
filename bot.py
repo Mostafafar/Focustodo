@@ -2651,14 +2651,14 @@ async def auto_complete_study(context) -> None:
 def main() -> None:
     """تابع اصلی اجرای ربات"""
     try:
-        print("🚀 شروع راه‌اندازی ربات...")
+        print("🚀 شروع راه‌اندازی ربات Focus Todo...")
         
         # ایجاد برنامه
         print("🔧 ایجاد Application...")
         application = Application.builder().token(TOKEN).build()
-        print("✅ Application ایجاد شد")
+        print("✅ Application با موفقیت ایجاد شد")
         
-        # ثبت هندلرهای دستورات
+        # ثبت هندلرها
         print("🔧 ثبت هندلرهای دستورات...")
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(CommandHandler("admin", admin_command))
@@ -2667,50 +2667,56 @@ def main() -> None:
         application.add_handler(CommandHandler("addfile", addfile_command))
         application.add_handler(CommandHandler("skip", skip_command))
         
-        # دستورات جدید
+        # دستورات اضافی
         application.add_handler(CommandHandler("updateuser", updateuser_command))
         application.add_handler(CommandHandler("userinfo", userinfo_command))
         
-        # ثبت هندلرهای پیام
-        print("🔧 ثبت هندلرهای پیام...")
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-        application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        # دستورات دیباگ
         application.add_handler(CommandHandler("sessions", debug_sessions_command))
         application.add_handler(CommandHandler("debugfiles", debug_files_command))
         application.add_handler(CommandHandler("checkdb", check_database_command))
         application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
         
-        # ثبت هندلرهای کال‌بک
-        print("🔧 ثبت هندلرهای کال‌بک...")
+        print("🔧 ثبت هندلرهای پیام و سند...")
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+        application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        
+        print("🔧 ثبت هندلر کال‌بک...")
         application.add_handler(CallbackQueryHandler(handle_callback))
         
-        print("✅ همه هندلرها ثبت شدند")
+        print("✅ تمام هندلرها با موفقیت ثبت شدند")
         
-        # راه‌اندازی ربات
-        logger.info("✅ ربات در حال راه‌اندازی...")
-        print("=" * 50)
-        print("🤖 ربات Focus Todo راه‌اندازی شد!")
+        # نمایش اطلاعات نهایی
+        print("=" * 60)
+        print("🤖 ربات Focus Todo آماده اجراست!")
         print(f"👨‍💼 ادمین‌ها: {ADMIN_IDS}")
-        print(f"⏰ محدودیت زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
-        print(f"🗄️ دیتابیس: PostgreSQL")
-        print("=" * 50)
+        print(f"⏰ حداکثر زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
+        print(f"🗄️ دیتابیس: {DB_CONFIG['database']} روی {DB_CONFIG['host']}")
+        print(f"🌍 منطقه زمانی: ایران ({IRAN_TZ})")
+        print("=" * 60)
+        print("🔄 شروع Polling... ربات اکنون فعال است!")
+        print("📱 حالا در تلگرام به ربات پیام بفرستید (مثلاً /start)")
+        print("⚠️  برای توقف ربات: Ctrl + C فشار دهید")
+        print("=" * 60)
         
-        # راه‌اندازی polling با تنظیمات خاص
-        print("🔄 شروع Polling...")
+        logger.info("ربات شروع به کار کرد - Polling فعال شد")
+        
+        # شروع polling — این خط بلاک می‌کند و کد بعدی اجرا نمی‌شود (عادی است!)
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
-            poll_interval=2,  # افزایش فاصله polling
+            poll_interval=2.0,
             timeout=30,
-            close_loop=False  # این تنظیم را اضافه کنید
+            read_latency=2.0
         )
         
-        print("✅ Polling شروع شد")
+        # این خط فقط وقتی اجرا می‌شود که polling متوقف شود (مثلاً با Ctrl+C)
+        print("⏹️ Polling متوقف شد. ربات خاموش شد.")
         
     except KeyboardInterrupt:
-        print("\n⏹️ ربات متوقف شد")
+        print("\n⏹️ ربات توسط کاربر متوقف شد (Ctrl+C)")
     except Exception as e:
-        print(f"❌ خطای بحرانی: {e}")
+        logger.error(f"خطای بحرانی در راه‌اندازی ربات: {e}")
+        print(f"❌ خطا در اجرای ربات: {e}")
         import traceback
         traceback.print_exc()
-        raise SystemExit(1)

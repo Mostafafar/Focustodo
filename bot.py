@@ -837,12 +837,14 @@ def get_user_files(user_id: int) -> List[Dict]:
     """دریافت فایل‌های مرتبط با کاربر"""
     try:
         # دریافت اطلاعات کاربر
+        logger.info(f"🔍 دریافت فایل‌های کاربر {user_id}")
         user_info = get_user_info(user_id)
-        logger.info(f"🔍 دریافت فایل‌های کاربر {user_id} - اطلاعات: {user_info}")
         
         if not user_info:
-            logger.warning(f"⚠️ کاربر {user_id} اطلاعات ندارد")
+            logger.warning(f"⚠️ اطلاعات کاربر {user_id} یافت نشد")
             return []
+        
+        logger.info(f"🔍 اطلاعات کاربر {user_id}: {user_info}")
         
         grade = user_info["grade"]
         field = user_info["field"]
@@ -861,6 +863,11 @@ def get_user_files(user_id: int) -> List[Dict]:
         
         logger.info(f"🔍 تعداد فایل‌های یافت شده: {len(results) if results else 0}")
         
+        # لاگ تمام فایل‌های موجود در دیتابیس برای دیباگ
+        query_all = "SELECT file_id, grade, field, subject, file_name FROM files"
+        all_files = db.execute_query(query_all, fetchall=True)
+        logger.info(f"🔍 تمام فایل‌های دیتابیس: {all_files}")
+        
         files = []
         if results:
             for row in results:
@@ -875,65 +882,62 @@ def get_user_files(user_id: int) -> List[Dict]:
                     "download_count": row[7]
                 })
         
+        logger.info(f"🔍 فایل‌های بازگشتی: {[f['file_name'] for f in files]}")
         return files
         
     except Exception as e:
         logger.error(f"❌ خطا در دریافت فایل‌های کاربر: {e}", exc_info=True)
         return []
-async def test_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """تست دریافت فایل‌های کاربر"""
+async def debug_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور دیباگ فایل‌ها"""
     user_id = update.effective_user.id
     
-    # ۱. بررسی وضعیت کاربر
-    user_info = get_user_info(user_id)
-    await update.message.reply_text(
-        f"🔍 وضعیت کاربر:\n"
-        f"آیدی: {user_id}\n"
-        f"اطلاعات: {user_info}\n"
-    )
-    
-    # ۲. بررسی فایل‌های موجود برای این کاربر
-    files = get_user_files(user_id)
-    
-    if user_info:
-        await update.message.reply_text(
-            f"✅ کاربر موجود:\n"
-            f"👤: {user_info['username']}\n"
-            f"🎓: {user_info['grade']}\n"
-            f"🧪: {user_info['field']}\n"
-            f"⏰: {user_info['total_study_time']} دقیقه\n"
-        )
-    else:
-        await update.message.reply_text("❌ کاربر در سیستم ثبت‌نام نکرده یا غیرفعال است")
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
         return
     
-    # ۳. نمایش فایل‌ها
-    if not files:
-        await update.message.reply_text(
-            f"📭 هیچ فایلی برای {user_info['grade']} {user_info['field']} یافت نشد.\n\n"
-            f"🔍 در حال جستجوی همه فایل‌های سیستم..."
-        )
-        
-        # نمایش همه فایل‌های سیستم
-        all_files = get_all_files()
-        if all_files:
-            text = "📁 همه فایل‌های سیستم:\n\n"
-            for f in all_files[:10]:  # فقط 10 فایل اول
-                text += f"📄 {f['file_name']}\n"
-                text += f"   🎓 {f['grade']} | 🧪 {f['field']} | 📚 {f['subject']}\n"
-                text += f"   🆔 FD-{f['file_id']}\n\n"
-            
-            await update.message.reply_text(text)
-        else:
-            await update.message.reply_text("📭 هیچ فایلی در سیستم وجود ندارد")
-    else:
-        text = f"📚 فایل‌های شما ({len(files)} مورد):\n\n"
-        for i, file in enumerate(files[:5], 1):
-            text += f"{i}. {file['file_name']}\n"
+    # بررسی تمام فایل‌ها
+    all_files = get_all_files()
+    
+    text = f"📊 دیباگ فایل‌ها دیتابیس:\n\n"
+    text += f"📁 تعداد کل فایل‌ها: {len(all_files)}\n\n"
+    
+    if all_files:
+        for file in all_files:
+            text += f"🆔 {file['file_id']}: {file['grade']} {file['field']}\n"
             text += f"   📚 {file['subject']} - {file['topic']}\n"
+            text += f"   📄 {file['file_name']}\n"
+            text += f"   📦 {file['file_size'] // 1024} KB\n"
+            text += f"   📅 {file['upload_date']}\n"
             text += f"   📥 {file['download_count']} دانلود\n\n"
+    else:
+        text += "📭 هیچ فایلی در دیتابیس وجود ندارد\n\n"
+    
+    # بررسی دستی دیتابیس
+    try:
+        query = "SELECT COUNT(*) FROM files"
+        count = db.execute_query(query, fetch=True)
+        text += f"🔢 تعداد رکوردها در جدول files: {count[0] if count else 0}\n"
         
-        await update.message.reply_text(text)
+        # بررسی ساختار جدول
+        query_structure = """
+        SELECT column_name, data_type 
+        FROM information_schema.columns 
+        WHERE table_name = 'files'
+        """
+        columns = db.execute_query(query_structure, fetchall=True)
+        
+        if columns:
+            text += "\n🗃️ ساختار جدول files:\n"
+            for col in columns:
+                text += f"  • {col[0]}: {col[1]}\n"
+    
+    except Exception as e:
+        text += f"\n❌ خطا در بررسی دیتابیس: {e}"
+    
+    await update.message.reply_text(text)
+
+# در main() اضافه کنید:
 
 # در main() اضافه کنید:
 
@@ -1028,6 +1032,8 @@ def increment_download_count(file_id: int) -> bool:
 def get_all_files() -> List[Dict]:
     """دریافت همه فایل‌ها (برای ادمین)"""
     try:
+        logger.info("🔍 دریافت همه فایل‌ها از دیتابیس")
+        
         query = """
         SELECT file_id, grade, field, subject, topic, file_name, 
                file_size, upload_date, download_count
@@ -1037,6 +1043,8 @@ def get_all_files() -> List[Dict]:
         """
         
         results = db.execute_query(query, fetchall=True)
+        
+        logger.info(f"🔍 تعداد کل فایل‌ها در دیتابیس: {len(results) if results else 0}")
         
         files = []
         if results:
@@ -1052,12 +1060,102 @@ def get_all_files() -> List[Dict]:
                     "upload_date": row[7],
                     "download_count": row[8]
                 })
+                logger.info(f"📄 فایل {row[0]}: {row[1]} {row[2]} - {row[3]} - {row[5]}")
         
         return files
         
     except Exception as e:
-        logger.error(f"خطا در دریافت همه فایل‌ها: {e}")
+        logger.error(f"❌ خطا در دریافت همه فایل‌ها: {e}", exc_info=True)
         return []
+async def debug_user_match_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بررسی تطابق کاربر با فایل‌ها"""
+    if not context.args:
+        target_user_id = update.effective_user.id
+    else:
+        try:
+            target_user_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("❌ آیدی باید عددی باشد.")
+            return
+    
+    user_info = get_user_info(target_user_id)
+    
+    if not user_info:
+        await update.message.reply_text(f"❌ کاربر {target_user_id} یافت نشد.")
+        return
+    
+    grade = user_info["grade"]
+    field = user_info["field"]
+    
+    # فایل‌های کاربر
+    user_files = get_user_files(target_user_id)
+    
+    # تمام فایل‌ها
+    all_files = get_all_files()
+    
+    text = f"🔍 تطابق فایل‌ها برای کاربر {target_user_id}:\n\n"
+    text += f"👤 کاربر: {user_info['username']}\n"
+    text += f"🎓 پایه: {grade}\n"
+    text += f"🧪 رشته: {field}\n\n"
+    
+    text += f"📁 فایل‌های مرتبط: {len(user_files)}\n"
+    for f in user_files:
+        text += f"  • {f['file_name']} ({f['subject']})\n"
+    
+    text += f"\n📊 تمام فایل‌های دیتابیس: {len(all_files)}\n"
+    
+    if all_files:
+        for f in all_files:
+            match = f["grade"] == grade and f["field"] == field
+            match_symbol = "✅" if match else "❌"
+            text += f"\n{match_symbol} {f['file_id']}: {f['grade']} {f['field']} - {f['subject']} - {f['file_name']}"
+    
+    await update.message.reply_text(text)
+
+# در main() اضافه کنید:
+async def check_database_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بررسی مستقیم دیتابیس"""
+    if not is_admin(update.effective_user.id):
+        return
+    
+    try:
+        # بررسی مستقیم رکوردهای جدول files
+        query = """
+        SELECT file_id, grade, field, subject, topic, file_name, 
+               upload_date, uploader_id
+        FROM files
+        """
+        
+        results = db.execute_query(query, fetchall=True)
+        
+        if not results:
+            await update.message.reply_text("📭 جدول files خالی است")
+            return
+        
+        text = "📊 رکوردهای جدول files:\n\n"
+        for row in results:
+            text += f"🆔 ID: {row[0]}\n"
+            text += f"🎓 پایه: {row[1]}\n"
+            text += f"🧪 رشته: {row[2]}\n"
+            text += f"📚 درس: {row[3]}\n"
+            text += f"🎯 مبحث: {row[4]}\n"
+            text += f"📄 نام فایل: {row[5]}\n"
+            text += f"📅 تاریخ: {row[6]}\n"
+            text += f"👤 آپلودکننده: {row[7]}\n"
+            text += "─" * 20 + "\n"
+        
+        # برش متن اگر طولانی باشد
+        if len(text) > 4000:
+            text = text[:4000] + "\n... (متن برش خورد)"
+        
+        await update.message.reply_text(text)
+        
+    except Exception as e:
+        logger.error(f"خطا در بررسی دیتابیس: {e}")
+        await update.message.reply_text(f"❌ خطا در بررسی دیتابیس: {e}")
+
+# در main() اضافه کنید:
+
 
 def delete_file(file_id: int) -> bool:
     """حذف فایل"""
@@ -2273,6 +2371,8 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CommandHandler("sessions", debug_sessions_command))
     application.add_handler(CommandHandler("testfiles", test_files_command))
+    application.add_handler(CommandHandler("checkdb", check_database_command))
+    application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
 
     
     # ثبت هندلرهای کال‌بک

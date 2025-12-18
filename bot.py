@@ -2654,7 +2654,7 @@ def main() -> None:
     # ایجاد برنامه
     application = Application.builder().token(TOKEN).build()
     
-    # ثبت هندلرهای دستورات اصلی
+    # ثبت هندلرهای دستورات
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("active", active_command))
@@ -2662,47 +2662,31 @@ def main() -> None:
     application.add_handler(CommandHandler("addfile", addfile_command))
     application.add_handler(CommandHandler("skip", skip_command))
     
-    # دستورات جدید (اگر تعریف کردی)
+    # **اضافه کردن دستورات جدید مدیریت کاربران**
     application.add_handler(CommandHandler("updateuser", updateuser_command))
     application.add_handler(CommandHandler("userinfo", userinfo_command))
     
-    # دستورات دیباگ (فقط ادمین‌ها می‌تونن استفاده کنن — در هندلرها چک کن)
+    # ثبت هندلرهای پیام
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CommandHandler("sessions", debug_sessions_command))
     application.add_handler(CommandHandler("debugfiles", debug_files_command))
     application.add_handler(CommandHandler("checkdb", check_database_command))
     application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
     
-    # ثبت هندلرهای پیام
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    
     # ثبت هندلرهای کال‌بک
     application.add_handler(CallbackQueryHandler(handle_callback))
     
-    # لاگ نهایی راه‌اندازی
-    logger.info("✅ ربات با موفقیت ساخته شد و هندلرها ثبت شدند.")
-    print("=" * 60)
-    print("🤖 ربات Focus Todo با موفقیت راه‌اندازی شد!")
+    # راه‌اندازی ربات
+    logger.info("✅ ربات در حال راه‌اندازی...")
+    print("=" * 50)
+    print("🤖 ربات Focus Todo راه‌اندازی شد!")
     print(f"👨‍💼 ادمین‌ها: {ADMIN_IDS}")
-    print(f"⏰ حداکثر زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
-    print(f"🗄️ دیتابیس: PostgreSQL ({DB_CONFIG['database']})")
-    print(f"🌍 زمان محلی: ایران ({IRAN_TZ})")
-    print("=" * 60)
-    print("🚀 شروع polling — ربات اکنون فعال است و منتظر پیام از تلگرام...")
-    print("📱 حالا در تلگرام به ربات پیام بفرستید (مثلاً /start)")
-    print("⚠️  برای توقف ربات: Ctrl + C فشار دهید")
-    print("=" * 60)
-
-    try:
-        # شروع polling
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,  # آپدیت‌های قدیمی رو نادیده بگیر
-            read_latency=2.0,           # اختیاری: تأخیر خواندن آپدیت‌ها
-            timeout=20                  # تایم‌اوت درخواست به تلگرام
-        )
-    except Exception as e:
-        logger.error(f"❌ خطا در شروع polling: {e}")
-        print(f"❌ خطا در اجرای ربات: {e}")
-        print("احتمالاً مشکل شبکه، فایروال یا توکن اشتباه است.")
-        raise  # برای دیباگ کامل
+    print(f"⏰ محدودیت زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
+    print(f"🗄️ دیتابیس: PostgreSQL")
+    print("=" * 50)
+    
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
+    )

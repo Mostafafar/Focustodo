@@ -1848,6 +1848,7 @@ async def complete_study_process(query, context, user_id: int) -> None:
     jobs = context.job_queue.get_jobs_by_name(str(session_id))
     for job in jobs:
         job.schedule_removal()
+        logger.info(f"⏰ تایمر جلسه {session_id} لغو شد")
     
     # تکمیل جلسه
     session = complete_study_session(session_id)
@@ -1861,11 +1862,18 @@ async def complete_study_process(query, context, user_id: int) -> None:
         
         rank_text = f"🏆 رتبه شما امروز: {rank}" if rank else ""
         
+        # نمایش زمان واقعی و برنامه‌ریزی شده
+        time_info = ""
+        if session.get("planned_minutes") != session["minutes"]:
+            time_info = f"⏱ زمان واقعی: {format_time(session['minutes'])} (از {format_time(session['planned_minutes'])})"
+        else:
+            time_info = f"⏱ مدت: {format_time(session['minutes'])}"
+        
         await query.edit_message_text(
             f"✅ مطالعه تکمیل شد!\n\n"
             f"📚 درس: {session['subject']}\n"
             f"🎯 مبحث: {session['topic']}\n"
-            f"⏰ مدت: {format_time(session['minutes'])}\n"
+            f"{time_info}\n"
             f"🏆 امتیاز: +{score}\n"
             f"📅 تاریخ: {date_str}\n"
             f"🕒 زمان: {time_str}\n\n"

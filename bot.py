@@ -2747,7 +2747,22 @@ async def download_file(query, file_id: int, user_id: int, context: ContextTypes
         await query.answer("❌ دسترسی denied.", show_alert=True)
         return
     
-    if user_info["grade"] != file_data["grade"] or user_info["field"] != file_data["field"]:
+    # منطق جدید: فارغ‌التحصیل‌ها به فایل‌های دوازدهم دسترسی دارند
+    user_grade = user_info["grade"]
+    user_field = user_info["field"]
+    file_grade = file_data["grade"]
+    file_field = file_data["field"]
+    
+    # بررسی دسترسی
+    has_access = False
+    
+    if user_field == file_field:
+        if user_grade == file_grade:
+            has_access = True
+        elif user_grade == "فارغ‌التحصیل" and file_grade == "دوازدهم":
+            has_access = True
+    
+    if not has_access:
         await query.answer("❌ شما به این فایل دسترسی ندارید.", show_alert=True)
         return
     
@@ -2760,6 +2775,8 @@ async def download_file(query, file_id: int, user_id: int, context: ContextTypes
                 f"📄 **{file_data['file_name']}**\n\n"
                 f"📚 درس: {file_data['subject']}\n"
                 f"🎯 مبحث: {file_data['topic']}\n"
+                f"🎓 پایه: {file_data['grade']}\n"
+                f"🧪 رشته: {file_data['field']}\n"
                 f"📦 حجم: {file_data['file_size'] // 1024} KB\n"
                 f"📅 تاریخ آپلود: {file_data['upload_date']}\n\n"
                 f"✅ با موفقیت دانلود شد!"

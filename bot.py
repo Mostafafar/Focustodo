@@ -1411,40 +1411,45 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user = update.effective_user
     user_id = user.id
     
-    # اگر کاربر ثبت‌نام نکرده
-    if user_id not in [r[0] for r in db.execute_query("SELECT user_id FROM users WHERE user_id = %s", (user_id,), fetchall=True)]:
+    logger.info(f"🔍 بررسی کاربر {user_id} در دیتابیس...")
+    
+    # بررسی وجود کاربر در دیتابیس
+    query = "SELECT user_id, is_active FROM users WHERE user_id = %s"
+    result = db.execute_query(query, (user_id,), fetch=True)
+    
+    if not result:
+        logger.info(f"📝 کاربر جدید {user_id} - شروع فرآیند ثبت‌نام")
+        # کاربر جدید - شروع ثبت‌نام
+        context.user_data["registration_step"] = "grade"
+        
         await update.message.reply_text(
             "👋 به ربات Focus Todo خوش آمدید!\n\n"
-            "📝 برای استفاده از ربات، ابتدا باید ثبت‌نام کنید.\n"
-            "لطفا اطلاعات زیر را ارسال کنید:\n\n"
-            "1. پایه تحصیلی\n"
-            "2. رشته\n"
-            "3. یک پیام آزاد درباره خودتان\n\n"
-            "مثال:\n"
-            "دوازدهم\n"
-            "تجربی\n"
-            "علاقه‌مند به یادگیری و پیشرفت"
+            "📝 برای استفاده از ربات، ابتدا باید ثبت‌نام کنید.\n\n"
+            "🎓 **لطفا پایه تحصیلی خود را انتخاب کنید:**",
+            reply_markup=get_grade_keyboard()
         )
-        context.user_data["awaiting_registration"] = True
         return
     
-    # اگر کاربر ثبت‌نام کرده اما غیرفعال است
-    if not is_user_active(user_id):
+    # بررسی فعال بودن کاربر
+    is_active = result[1]
+    if not is_active:
         await update.message.reply_text(
             "⏳ حساب کاربری شما در حال بررسی است.\n"
-            "لطفا منتظر تأیید ادمین باشید."
+            "لطفا منتظر تأیید ادمین باشید.\n\n"
+            "🔔 پس از تأیید، می‌توانید از ربات استفاده کنید."
         )
         return
     
     # کاربر فعال
     await update.message.reply_text(
-        "🎯 به Focus Todo خوش آمدید!\n\n"
+        "🎯 به کمپ خوش آمدید!\n\n"
         "📚 سیستم مدیریت مطالعه و رقابت سالم\n"
         "⏰ تایمر هوشمند | 🏆 رتبه‌بندی آنلاین\n"
         "📖 منابع شخصی‌سازی شده\n\n"
         "لطفا یک گزینه انتخاب کنید:",
         reply_markup=get_main_menu()
     )
+
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور /admin (فقط برای ادمین‌ها)"""

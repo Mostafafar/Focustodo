@@ -2366,6 +2366,7 @@ async def complete_study_process(query, context, user_id: int) -> None:
     
     context.user_data.pop("current_session", None)
 
+
 async def show_rankings(query, user_id: int) -> None:
     """نمایش رتبه‌بندی"""
     rankings = get_today_rankings()
@@ -2374,34 +2375,66 @@ async def show_rankings(query, user_id: int) -> None:
     if not rankings:
         text = f"🏆 جدول برترین‌ها\n\n📅 {date_str}\n🕒 {time_str}\n\n📭 هنوز کسی مطالعه نکرده است!"
     else:
-        text = f"🏆 جدول برترین‌های امروز\n\n📅 {date_str}\n🕒 {time_str}\n\n"
+        text = f"🏆 **جدول برترین‌های امروز**\n\n📅 {date_str}\n🕒 {time_str}\n\n"
         
         medals = ["🥇", "🥈", "🥉"]
-        for i, rank in enumerate(rankings[:10]):
+        
+        # نمایش فقط 3 نفر اول
+        for i, rank in enumerate(rankings[:3]):
             if i < 3:
                 medal = medals[i]
+                hours = rank["total_minutes"] // 60
+                mins = rank["total_minutes"] % 60
+                time_display = f"{hours}س {mins}د" if hours > 0 else f"{mins}د"
+                
+                # استفاده از نام کاربری به جای آیدی
+                username = rank["username"] or "کاربر"
+                grade_field = f"({rank['grade']} {rank['field']})"
+                
+                # اگر کاربر خودش در رتبه‌های اول باشد، مشخص کنیم
+                if rank["user_id"] == user_id:
+                    text += f"{medal} **{username}** {grade_field}: {time_display} ← **شما**\n"
+                else:
+                    text += f"{medal} **{username}** {grade_field}: {time_display}\n"
+        
+        # بررسی موقعیت کاربر فعلی
+        user_rank, user_minutes = get_user_rank_today(user_id)
+        
+        if user_rank:
+            hours = user_minutes // 60
+            mins = user_minutes % 60
+            user_time_display = f"{hours}س {mins}د" if hours > 0 else f"{mins}د"
+            
+            # اگر کاربر در رتبه‌های 1-3 نیست، موقعیت او را نمایش بده
+            if user_rank > 3 and user_minutes > 0:
+                # دریافت اطلاعات کاربر برای نمایش نام
+                user_info = get_user_info(user_id)
+                username = user_info["username"] if user_info else "شما"
+                grade = user_info["grade"] if user_info else ""
+                field = user_info["field"] if user_info else ""
+                grade_field = f"({grade} {field})" if grade and field else ""
+                
+                text += f"\n📊 **موقعیت شما:**\n"
+                text += f"🏅 رتبه {user_rank}: **{username}** {grade_field}: {user_time_display}\n"
+            
+            elif user_rank <= 3:
+                text += f"\n🎉 **آفرین! شما در بین ۳ نفر برتر هستید!**\n"
             else:
-                medal = f"{i+1}."
-            
-            hours = rank["total_minutes"] // 60
-            mins = rank["total_minutes"] % 60
-            time_display = f"{hours}س {mins}د" if hours > 0 else f"{mins}د"
-            
-            user_display = f"{rank['username']} ({rank['grade']} {rank['field']})"
-            if rank["user_id"] == user_id:
-                user_display = f"**{user_display}** ←"
-            
-            text += f"{medal} {user_display}: {time_display}\n"
+                text += f"\n📊 شروع کنید تا در جدول قرار بگیرید!\n"
+        
+        # نمایش تعداد کل شرکت‌کنندگان
+        text += f"\n👥 تعداد کل شرکت‌کنندگان امروز: **{len(rankings)} نفر**"
     
     await query.edit_message_text(
         text,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🔄 به‌روزرسانی", callback_data="rankings"),
+            InlineKeyboardButton("➕ ثبت مطالعه", callback_data="start_study")
+        ], [
             InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")
         ]]),
         parse_mode=ParseMode.MARKDOWN
-    )
-
+        )
 async def show_files_menu(query, user_id: int) -> None:
     """نمایش منوی منابع"""
     user_files = get_user_files(user_id)

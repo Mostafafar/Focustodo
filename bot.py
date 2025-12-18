@@ -2652,71 +2652,82 @@ def main() -> None:
     """تابع اصلی اجرای ربات"""
     try:
         print("🚀 شروع راه‌اندازی ربات Focus Todo...")
+        print(f"📋 نسخه Python: {__import__('sys').version}")
+        print(f"📦 محل اجرا: {__import__('os').getcwd()}")
         
         # ایجاد برنامه
-        print("🔧 ایجاد Application...")
+        print("\n🔧 ایجاد Application...")
         application = Application.builder().token(TOKEN).build()
         print("✅ Application با موفقیت ایجاد شد")
         
         # ثبت هندلرها
-        print("🔧 ثبت هندلرهای دستورات...")
+        print("\n📝 ثبت هندلرهای دستورات...")
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(CommandHandler("admin", admin_command))
         application.add_handler(CommandHandler("active", active_command))
         application.add_handler(CommandHandler("deactive", deactive_command))
         application.add_handler(CommandHandler("addfile", addfile_command))
         application.add_handler(CommandHandler("skip", skip_command))
-        
-        # دستورات اضافی
         application.add_handler(CommandHandler("updateuser", updateuser_command))
         application.add_handler(CommandHandler("userinfo", userinfo_command))
+        print("   ✓ 8 دستور اصلی ثبت شد")
         
         # دستورات دیباگ
+        print("\n🔍 ثبت دستورات دیباگ...")
         application.add_handler(CommandHandler("sessions", debug_sessions_command))
         application.add_handler(CommandHandler("debugfiles", debug_files_command))
         application.add_handler(CommandHandler("checkdb", check_database_command))
         application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
+        print("   ✓ 4 دستور دیباگ ثبت شد")
         
-        print("🔧 ثبت هندلرهای پیام و سند...")
+        # هندلرهای پیام
+        print("\n📨 ثبت هندلرهای پیام و فایل...")
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        print("   ✓ هندلرهای متن و فایل ثبت شد")
         
-        print("🔧 ثبت هندلر کال‌بک...")
+        # هندلر کال‌بک
+        print("\n🔘 ثبت هندلر کال‌بک...")
         application.add_handler(CallbackQueryHandler(handle_callback))
-        
-        print("✅ تمام هندلرها با موفقیت ثبت شدند")
+        print("   ✓ هندلر کال‌بک ثبت شد")
         
         # نمایش اطلاعات نهایی
-        print("=" * 60)
+        print("\n" + "=" * 70)
         print("🤖 ربات Focus Todo آماده اجراست!")
+        print("=" * 70)
         print(f"👨‍💼 ادمین‌ها: {ADMIN_IDS}")
         print(f"⏰ حداکثر زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
-        print(f"🗄️ دیتابیس: {DB_CONFIG['database']} روی {DB_CONFIG['host']}")
+        print(f"🗄️  دیتابیس: {DB_CONFIG['database']} @ {DB_CONFIG['host']}:{DB_CONFIG['port']}")
         print(f"🌍 منطقه زمانی: ایران ({IRAN_TZ})")
-        print("=" * 60)
-        print("🔄 شروع Polling... ربات اکنون فعال است!")
-        print("📱 حالا در تلگرام به ربات پیام بفرستید (مثلاً /start)")
-        print("⚠️  برای توقف ربات: Ctrl + C فشار دهید")
-        print("=" * 60)
+        print(f"🔑 توکن: {TOKEN[:10]}...{TOKEN[-10:]}")
+        print("=" * 70)
+        print("🔄 شروع Polling...")
+        print("📱 ربات اکنون در حال گوش دادن به پیام‌هاست")
+        print("⚠️  برای توقف: Ctrl + C فشار دهید")
+        print("=" * 70 + "\n")
         
-        logger.info("ربات شروع به کار کرد - Polling فعال شد")
+        logger.info("🚀 ربات شروع به کار کرد - Polling فعال شد")
         
-        # شروع polling — این خط بلاک می‌کند و کد بعدی اجرا نمی‌شود (عادی است!)
+        # شروع polling
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
             poll_interval=2.0,
-            timeout=30,
-            read_latency=2.0
+            timeout=30
         )
         
-        # این خط فقط وقتی اجرا می‌شود که polling متوقف شود (مثلاً با Ctrl+C)
-        print("⏹️ Polling متوقف شد. ربات خاموش شد.")
+        print("\nℹ️  Polling متوقف شد. ربات خاموش شد.")
         
     except KeyboardInterrupt:
-        print("\n⏹️ ربات توسط کاربر متوقف شد (Ctrl+C)")
+        print("\n\n⏹️  ربات توسط کاربر متوقف شد (Ctrl+C)")
+        logger.info("ربات توسط کاربر متوقف شد")
     except Exception as e:
-        logger.error(f"خطای بحرانی در راه‌اندازی ربات: {e}")
-        print(f"❌ خطا در اجرای ربات: {e}")
+        logger.error(f"❌ خطای بحرانی: {e}", exc_info=True)
+        print(f"\n❌ خطای بحرانی در اجرای ربات:")
+        print(f"   {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
+        raise
+
+if __name__ == "__main__":
+    main()

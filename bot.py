@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import html
 import time
@@ -469,6 +470,63 @@ def update_user_info(user_id: int, grade: str, field: str) -> bool:
 # -----------------------------------------------------------
 # مدیریت جلسات مطالعه
 # -----------------------------------------------------------
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال پیام همگانی به همه کاربران"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ فرمت صحیح:\n"
+            "/broadcast <پیام>\n\n"
+            "مثال:\n"
+            "/broadcast اطلاعیه مهم: جلسه فردا لغو شد."
+        )
+        return
+    
+    message = " ".join(context.args)
+    
+    # دریافت لیست کاربران فعال
+    query = """
+    SELECT user_id FROM users 
+    WHERE is_active = TRUE AND user_id != %s
+    """
+    results = db.execute_query(query, (user_id,), fetchall=True)
+    
+    if not results:
+        await update.message.reply_text("❌ هیچ کاربر فعالی برای ارسال پیام وجود ندارد.")
+        return
+    
+    users = [row[0] for row in results]
+    successful = 0
+    failed = 0
+    
+    await update.message.reply_text(f"📤 شروع ارسال پیام به {len(users)} کاربر...")
+    
+    for user in users:
+        try:
+            await context.bot.send_message(
+                user,
+                f"📢 **پیام همگانی از مدیریت:**\n\n{message}"
+            )
+            successful += 1
+            
+            # تاخیر کوچک برای جلوگیری از محدودیت تلگرام
+            await asyncio.sleep(0.1)
+            
+        except Exception as e:
+            logger.error(f"خطا در ارسال به کاربر {user}: {e}")
+            failed += 1
+    
+    await update.message.reply_text(
+        f"✅ ارسال پیام همگانی تکمیل شد:\n\n"
+        f"✅ موفق: {successful} کاربر\n"
+        f"❌ ناموفق: {failed} کاربر\n"
+        f"📊 مجموع: {len(users)} کاربر"
+            )
 async def debug_sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """بررسی جلسات مطالعه"""
     user_id = update.effective_user.id
@@ -2912,6 +2970,7 @@ def main() -> None:
         application.add_handler(CommandHandler("skip", skip_command))
         application.add_handler(CommandHandler("updateuser", updateuser_command))
         application.add_handler(CommandHandler("userinfo", userinfo_command))
+        application.add_handler(CommandHandler("broadcast", broadcast_command))
         print("   ✓ 8 دستور اصلی ثبت شد")
         
         # دستورات دیباگ

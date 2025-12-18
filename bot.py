@@ -967,22 +967,27 @@ def get_user_files(user_id: int) -> List[Dict]:
         
         logger.info(f"🔍 جستجوی فایل‌ها برای: {grade} {field}")
         
-        query = """
-        SELECT file_id, subject, topic, description, file_name, file_size, upload_date, download_count
-        FROM files
-        WHERE grade = %s AND field = %s
-        ORDER BY upload_date DESC
-        LIMIT 50
-        """
-        
-        results = db.execute_query(query, (grade, field), fetchall=True)
+        # اگر کاربر فارغ‌التحصیل است، فایل‌های دوازدهم را هم شامل شود
+        if grade == "فارغ‌التحصیل":
+            query = """
+            SELECT file_id, subject, topic, description, file_name, file_size, upload_date, download_count
+            FROM files
+            WHERE (grade = %s OR grade = 'دوازدهم') AND field = %s
+            ORDER BY upload_date DESC
+            LIMIT 50
+            """
+            results = db.execute_query(query, (grade, field), fetchall=True)
+        else:
+            query = """
+            SELECT file_id, subject, topic, description, file_name, file_size, upload_date, download_count
+            FROM files
+            WHERE grade = %s AND field = %s
+            ORDER BY upload_date DESC
+            LIMIT 50
+            """
+            results = db.execute_query(query, (grade, field), fetchall=True)
         
         logger.info(f"🔍 تعداد فایل‌های یافت شده: {len(results) if results else 0}")
-        
-        # لاگ تمام فایل‌های موجود در دیتابیس برای دیباگ
-        query_all = "SELECT file_id, grade, field, subject, file_name FROM files"
-        all_files = db.execute_query(query_all, fetchall=True)
-        logger.info(f"🔍 تمام فایل‌های دیتابیس: {all_files}")
         
         files = []
         if results:
@@ -1057,6 +1062,7 @@ async def debug_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # در main() اضافه کنید:
 
+
 def get_files_by_subject(user_id: int, subject: str) -> List[Dict]:
     """دریافت فایل‌های یک درس خاص"""
     try:
@@ -1067,14 +1073,23 @@ def get_files_by_subject(user_id: int, subject: str) -> List[Dict]:
         grade = user_info["grade"]
         field = user_info["field"]
         
-        query = """
-        SELECT file_id, topic, description, file_name, file_size, upload_date, download_count
-        FROM files
-        WHERE grade = %s AND field = %s AND subject = %s
-        ORDER BY upload_date DESC
-        """
-        
-        results = db.execute_query(query, (grade, field, subject), fetchall=True)
+        # اگر کاربر فارغ‌التحصیل است، فایل‌های دوازدهم را هم شامل شود
+        if grade == "فارغ‌التحصیل":
+            query = """
+            SELECT file_id, topic, description, file_name, file_size, upload_date, download_count
+            FROM files
+            WHERE (grade = %s OR grade = 'دوازدهم') AND field = %s AND subject = %s
+            ORDER BY upload_date DESC
+            """
+            results = db.execute_query(query, (grade, field, subject), fetchall=True)
+        else:
+            query = """
+            SELECT file_id, topic, description, file_name, file_size, upload_date, download_count
+            FROM files
+            WHERE grade = %s AND field = %s AND subject = %s
+            ORDER BY upload_date DESC
+            """
+            results = db.execute_query(query, (grade, field, subject), fetchall=True)
         
         files = []
         if results:

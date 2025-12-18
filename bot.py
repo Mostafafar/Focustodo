@@ -1,4 +1,5 @@
 import asyncio
+from datetime import time
 import logging
 import html
 import time
@@ -571,45 +572,14 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     
     message = " ".join(context.args)
+    broadcast_message = f"📢 **پیام همگانی از مدیریت:**\n\n{message}"
     
-    # دریافت لیست کاربران فعال
-    query = """
-    SELECT user_id FROM users 
-    WHERE is_active = TRUE AND user_id != %s
-    """
-    results = db.execute_query(query, (user_id,), fetchall=True)
+    await update.message.reply_text("📤 شروع ارسال پیام به همه کاربران...")
     
-    if not results:
-        await update.message.reply_text("❌ هیچ کاربر فعالی برای ارسال پیام وجود ندارد.")
-        return
+    # ارسال به همه کاربران
+    await send_to_all_users(context, broadcast_message)
     
-    users = [row[0] for row in results]
-    successful = 0
-    failed = 0
-    
-    await update.message.reply_text(f"📤 شروع ارسال پیام به {len(users)} کاربر...")
-    
-    for user in users:
-        try:
-            await context.bot.send_message(
-                user,
-                f"📢 **پیام همگانی از مدیریت:**\n\n{message}"
-            )
-            successful += 1
-            
-            # تاخیر کوچک برای جلوگیری از محدودیت تلگرام
-            await asyncio.sleep(0.1)
-            
-        except Exception as e:
-            logger.error(f"خطا در ارسال به کاربر {user}: {e}")
-            failed += 1
-    
-    await update.message.reply_text(
-        f"✅ ارسال پیام همگانی تکمیل شد:\n\n"
-        f"✅ موفق: {successful} کاربر\n"
-        f"❌ ناموفق: {failed} کاربر\n"
-        f"📊 مجموع: {len(users)} کاربر"
-            )
+    await update.message.reply_text("✅ ارسال پیام همگانی تکمیل شد")
 async def debug_sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """بررسی جلسات مطالعه"""
     user_id = update.effective_user.id
@@ -3138,6 +3108,17 @@ async def show_admin_stats(query) -> None:
 # -----------------------------------------------------------
 # توابع زمان‌بندی شده
 # -----------------------------------------------------------
+async def sendtop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال دستی رتبه‌های برتر (برای تست)"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    await update.message.reply_text("📤 ارسال رتبه‌های برتر...")
+    await send_daily_top_ranks(context)
+    await update.message.reply_text("✅ ارسال تکمیل شد")
 
 async def auto_complete_study(context) -> None:
     """اتمام خودکار جلسه مطالعه بعد از اتمام زمان"""
@@ -3180,15 +3161,19 @@ async def auto_complete_study(context) -> None:
 # -----------------------------------------------------------
 def main() -> None:
     """تابع اصلی اجرای ربات"""
-    try:
-        print("🚀 شروع راه‌اندازی ربات Focus Todo...")
-        print(f"📋 نسخه Python: {__import__('sys').version}")
-        print(f"📦 محل اجرا: {__import__('os').getcwd()}")
-        
-        # ایجاد برنامه
-        print("\n🔧 ایجاد Application...")
-        application = Application.builder().token(TOKEN).build()
-        print("✅ Application با موفقیت ایجاد شد")
+    # ایجاد برنامه
+    application = Application.builder().token(TOKEN).build()
+    
+    # راه‌اندازی تایمر برای ارسال رتبه‌های برتر ساعت 24:00
+    application.job_queue.run_daily(
+        send_daily_top_ranks,
+        time=time(hour=0, minute=0, second=0, tzinfo=IRAN_TZ),  # ساعت 24:00
+        days=(0, 1, 2, 3, 4, 5, 6),  # همه روزهای هفته
+        name="daily_top_ranks"
+    )
+    
+    # ثبت هندلرهای دستورات
+    # ... ادامه کد
         
         # ثبت هندلرها
         print("\n📝 ثبت هندلرهای دستورات...")
@@ -3201,6 +3186,8 @@ def main() -> None:
         application.add_handler(CommandHandler("updateuser", updateuser_command))
         application.add_handler(CommandHandler("userinfo", userinfo_command))
         application.add_handler(CommandHandler("broadcast", broadcast_command))
+        # در بخش ثبت هندلرهای دستورات
+        application.add_handler(CommandHandler("sendtop", sendtop_command))
         print("   ✓ 8 دستور اصلی ثبت شد")
         
         # دستورات دیباگ

@@ -2370,7 +2370,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CommandHandler("sessions", debug_sessions_command))
-    application.add_handler(CommandHandler("testfiles", test_files_command))
+    application.add_handler(CommandHandler("debugfiles", debug_files_command))
     application.add_handler(CommandHandler("checkdb", check_database_command))
     application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
 

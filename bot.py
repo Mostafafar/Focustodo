@@ -838,11 +838,16 @@ def get_user_files(user_id: int) -> List[Dict]:
     try:
         # دریافت اطلاعات کاربر
         user_info = get_user_info(user_id)
+        logger.info(f"🔍 دریافت فایل‌های کاربر {user_id} - اطلاعات: {user_info}")
+        
         if not user_info:
+            logger.warning(f"⚠️ کاربر {user_id} اطلاعات ندارد")
             return []
         
         grade = user_info["grade"]
         field = user_info["field"]
+        
+        logger.info(f"🔍 جستجوی فایل‌ها برای: {grade} {field}")
         
         query = """
         SELECT file_id, subject, topic, description, file_name, file_size, upload_date, download_count
@@ -853,6 +858,8 @@ def get_user_files(user_id: int) -> List[Dict]:
         """
         
         results = db.execute_query(query, (grade, field), fetchall=True)
+        
+        logger.info(f"🔍 تعداد فایل‌های یافت شده: {len(results) if results else 0}")
         
         files = []
         if results:
@@ -871,8 +878,64 @@ def get_user_files(user_id: int) -> List[Dict]:
         return files
         
     except Exception as e:
-        logger.error(f"خطا در دریافت فایل‌های کاربر: {e}")
+        logger.error(f"❌ خطا در دریافت فایل‌های کاربر: {e}", exc_info=True)
         return []
+async def test_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """تست دریافت فایل‌های کاربر"""
+    user_id = update.effective_user.id
+    
+    # ۱. بررسی وضعیت کاربر
+    user_info = get_user_info(user_id)
+    await update.message.reply_text(
+        f"🔍 وضعیت کاربر:\n"
+        f"آیدی: {user_id}\n"
+        f"اطلاعات: {user_info}\n"
+    )
+    
+    # ۲. بررسی فایل‌های موجود برای این کاربر
+    files = get_user_files(user_id)
+    
+    if user_info:
+        await update.message.reply_text(
+            f"✅ کاربر موجود:\n"
+            f"👤: {user_info['username']}\n"
+            f"🎓: {user_info['grade']}\n"
+            f"🧪: {user_info['field']}\n"
+            f"⏰: {user_info['total_study_time']} دقیقه\n"
+        )
+    else:
+        await update.message.reply_text("❌ کاربر در سیستم ثبت‌نام نکرده یا غیرفعال است")
+        return
+    
+    # ۳. نمایش فایل‌ها
+    if not files:
+        await update.message.reply_text(
+            f"📭 هیچ فایلی برای {user_info['grade']} {user_info['field']} یافت نشد.\n\n"
+            f"🔍 در حال جستجوی همه فایل‌های سیستم..."
+        )
+        
+        # نمایش همه فایل‌های سیستم
+        all_files = get_all_files()
+        if all_files:
+            text = "📁 همه فایل‌های سیستم:\n\n"
+            for f in all_files[:10]:  # فقط 10 فایل اول
+                text += f"📄 {f['file_name']}\n"
+                text += f"   🎓 {f['grade']} | 🧪 {f['field']} | 📚 {f['subject']}\n"
+                text += f"   🆔 FD-{f['file_id']}\n\n"
+            
+            await update.message.reply_text(text)
+        else:
+            await update.message.reply_text("📭 هیچ فایلی در سیستم وجود ندارد")
+    else:
+        text = f"📚 فایل‌های شما ({len(files)} مورد):\n\n"
+        for i, file in enumerate(files[:5], 1):
+            text += f"{i}. {file['file_name']}\n"
+            text += f"   📚 {file['subject']} - {file['topic']}\n"
+            text += f"   📥 {file['download_count']} دانلود\n\n"
+        
+        await update.message.reply_text(text)
+
+# در main() اضافه کنید:
 
 def get_files_by_subject(user_id: int, subject: str) -> List[Dict]:
     """دریافت فایل‌های یک درس خاص"""
@@ -2209,6 +2272,8 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CommandHandler("sessions", debug_sessions_command))
+    application.add_handler(CommandHandler("testfiles", test_files_command))
+
     
     # ثبت هندلرهای کال‌بک
     application.add_handler(CallbackQueryHandler(handle_callback))

@@ -2651,44 +2651,69 @@ async def auto_complete_study(context) -> None:
 
 def main() -> None:
     """تابع اصلی اجرای ربات"""
-    # ایجاد برنامه
-    application = Application.builder().token(TOKEN).build()
-    
-    # ثبت هندلرهای دستورات
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("admin", admin_command))
-    application.add_handler(CommandHandler("active", active_command))
-    application.add_handler(CommandHandler("deactive", deactive_command))
-    application.add_handler(CommandHandler("addfile", addfile_command))
-    application.add_handler(CommandHandler("skip", skip_command))
-    
-    # دستورات جدید
-    application.add_handler(CommandHandler("updateuser", updateuser_command))
-    application.add_handler(CommandHandler("userinfo", userinfo_command))
-    
-    # سایر دستورات دیباگ
-    application.add_handler(CommandHandler("sessions", debug_sessions_command))
-    application.add_handler(CommandHandler("debugfiles", debug_files_command))
-    application.add_handler(CommandHandler("checkdb", check_database_command))
-    application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
-    
-    # ثبت هندلرهای پیام
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    
-    # ثبت هندلرهای کال‌بک
-    application.add_handler(CallbackQueryHandler(handle_callback))
-    
-    # راه‌اندازی ربات
-    logger.info("✅ ربات در حال راه‌اندازی...")
-    print("=" * 50)
-    print("🤖 ربات Focus Todo راه‌اندازی شد!")
-    print(f"👨‍💼 ادمین‌ها: {ADMIN_IDS}")
-    print(f"⏰ محدودیت زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
-    print(f"🗄️ دیتابیس: PostgreSQL")
-    print("=" * 50)
-    
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    try:
+        logger.info("🔧 شروع راه‌اندازی ربات...")
+        
+        # ایجاد برنامه
+        logger.info("🔧 ایجاد Application...")
+        application = Application.builder().token(TOKEN).build()
+        logger.info("✅ Application ایجاد شد")
+        
+        # ثبت هندلرهای دستورات
+        logger.info("🔧 ثبت هندلرهای دستورات...")
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("admin", admin_command))
+        application.add_handler(CommandHandler("active", active_command))
+        application.add_handler(CommandHandler("deactive", deactive_command))
+        application.add_handler(CommandHandler("addfile", addfile_command))
+        application.add_handler(CommandHandler("skip", skip_command))
+        
+        # اضافه کردن دستورات جدید
+        application.add_handler(CommandHandler("updateuser", updateuser_command))
+        application.add_handler(CommandHandler("userinfo", userinfo_command))
+        
+        # ثبت هندلرهای پیام
+        logger.info("🔧 ثبت هندلرهای پیام...")
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+        application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        application.add_handler(CommandHandler("sessions", debug_sessions_command))
+        application.add_handler(CommandHandler("debugfiles", debug_files_command))
+        application.add_handler(CommandHandler("checkdb", check_database_command))
+        application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
+        
+        # ثبت هندلرهای کال‌بک
+        logger.info("🔧 ثبت هندلرهای کال‌بک...")
+        application.add_handler(CallbackQueryHandler(handle_callback))
+        
+        # هندلر خطا
+        async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+            """هندلر خطا"""
+            logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+            
+        application.add_error_handler(error_handler)
+        
+        # راه‌اندازی ربات
+        logger.info("🚀 راه‌اندازی ربات...")
+        print("=" * 50)
+        print("🤖 ربات Focus Todo راه‌اندازی شد!")
+        print(f"👨‍💼 ادمین‌ها: {ADMIN_IDS}")
+        print(f"⏰ محدودیت زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
+        print(f"🗄️ دیتابیس: PostgreSQL")
+        print("=" * 50)
+        
+        # راه‌اندازی polling
+        logger.info("🔄 شروع Polling...")
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+            timeout=30,
+            poll_interval=1
+        )
+        
+        logger.info("✅ Polling شروع شد")
+        
+    except KeyboardInterrupt:
+        logger.info("⏹️ ربات توسط کاربر متوقف شد")
+    except Exception as e:
+        logger.error(f"❌ خطای بحرانی در اجرای ربات: {e}", exc_info=True)
+        raise

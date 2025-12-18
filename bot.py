@@ -2662,7 +2662,7 @@ def main() -> None:
     application.add_handler(CommandHandler("addfile", addfile_command))
     application.add_handler(CommandHandler("skip", skip_command))
     
-    # **اضافه کردن دستورات جدید مدیریت کاربران**
+    # اضافه کردن دستورات جدید مدیریت کاربران
     application.add_handler(CommandHandler("updateuser", updateuser_command))
     application.add_handler(CommandHandler("userinfo", userinfo_command))
     
@@ -2689,4 +2689,4 @@ def main() -> None:
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
-    )
+            )

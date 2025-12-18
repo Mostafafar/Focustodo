@@ -448,13 +448,20 @@ def get_user_info(user_id: int) -> Optional[Dict]:
 
 def start_study_session(user_id: int, subject: str, topic: str, minutes: int) -> Optional[int]:
     """شروع جلسه مطالعه جدید"""
+    conn = None
+    cursor = None
+    
     try:
-        # 👇 دیباگ: بررسی وضعیت کاربر
         logger.info(f"🔍 شروع جلسه مطالعه - کاربر: {user_id}, درس: {subject}, مبحث: {topic}, زمان: {minutes} دقیقه")
+        
+        # استفاده از connection یکسان
+        conn = db.get_connection()
+        cursor = conn.cursor()
         
         # بررسی وجود کاربر در جدول users
         query_check = "SELECT user_id, is_active FROM users WHERE user_id = %s"
-        user_check = db.execute_query(query_check, (user_id,), fetch=True)
+        cursor.execute(query_check, (user_id,))
+        user_check = cursor.fetchone()
         
         logger.info(f"🔍 نتیجه بررسی کاربر {user_id}: {user_check}")
         
@@ -476,10 +483,13 @@ def start_study_session(user_id: int, subject: str, topic: str, minutes: int) ->
         """
         
         logger.info(f"🔍 در حال ثبت جلسه در دیتابیس...")
-        result = db.execute_query(query, (user_id, subject, topic, minutes, start_timestamp, date_str), fetch=True)
+        cursor.execute(query, (user_id, subject, topic, minutes, start_timestamp, date_str))
+        
+        result = cursor.fetchone()
         
         if result:
             session_id = result[0]
+            conn.commit()  # ذخیره تغییرات
             logger.info(f"✅ جلسه مطالعه شروع شد: {session_id} برای کاربر {user_id}")
             return session_id
         
@@ -488,78 +498,119 @@ def start_study_session(user_id: int, subject: str, topic: str, minutes: int) ->
         
     except Exception as e:
         logger.error(f"❌ خطا در شروع جلسه مطالعه: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
         return None
+        
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            db.return_connection(conn)
 
 def complete_study_session(session_id: int) -> Optional[Dict]:
     """اتمام جلسه مطالعه"""
+    conn = None
+    cursor = None
+    
     try:
         logger.info(f"🔍 تکمیل جلسه مطالعه - session_id: {session_id}")
         
-        end_timestamp = int(time.time())
+        # استفاده از connection یکسان برای همه کوئری‌ها
+        conn = db.get_connection()
+        cursor = conn.cursor()
         
-        # ابتدا اطلاعات جلسه را بگیریم
+        # ۱. ابتدا بررسی کنیم جلسه وجود دارد
         query_check = """
-        SELECT user_id, subject, topic, minutes, start_time, completed 
+        SELECT session_id, user_id, subject, topic, minutes, start_time, completed 
         FROM study_sessions 
         WHERE session_id = %s
         """
-        session_check = db.execute_query(query_check, (session_id,), fetch=True)
+        cursor.execute(query_check, (session_id,))
+        session_check = cursor.fetchone()
         
         if not session_check:
-            logger.error(f"❌ جلسه {session_id} یافت نشد")
+            logger.error(f"❌ جلسه {session_id} در کوئری اول یافت نشد")
+            
+            # یک کوئری دیگر برای دیباگ
+            cursor.execute("SELECT COUNT(*) FROM study_sessions WHERE session_id = %s", (session_id,))
+            count = cursor.fetchone()[0]
+            logger.error(f"❌ تعداد جلسات با ID {session_id}: {count}")
+            
+            # نمایش همه جلسات اخیر
+            cursor.execute("SELECT session_id, user_id, subject FROM study_sessions ORDER BY session_id DESC LIMIT 5")
+            recent = cursor.fetchall()
+            logger.error(f"❌ آخرین جلسات: {recent}")
+            
             return None
         
-        user_id, subject, topic, minutes, start_time, completed = session_check
-        logger.info(f"🔍 اطلاعات جلسه: کاربر={user_id}, درس={subject}, تکمیل شده={completed}")
+        session_id_db, user_id, subject, topic, minutes, start_time, completed = session_check
+        logger.info(f"🔍 اطلاعات جلسه: ID={session_id_db}, کاربر={user_id}, درس={subject}, تکمیل شده={completed}")
         
         if completed:
             logger.warning(f"⚠️ جلسه {session_id} قبلاً تکمیل شده است")
             return None
         
-        # تکمیل جلسه
-        query = """
+        end_timestamp = int(time.time())
+        
+        # ۲. تکمیل جلسه
+        query_update = """
         UPDATE study_sessions
         SET end_time = %s, completed = TRUE
         WHERE session_id = %s AND completed = FALSE
         RETURNING user_id, subject, topic, minutes, start_time
         """
         
-        logger.info(f"🔍 در حال بروزرسانی جلسه به تکمیل شده...")
-        result = db.execute_query(query, (end_timestamp, session_id), fetch=True)
+        logger.info(f"🔍 در حال بروزرسانی جلسه...")
+        cursor.execute(query_update, (end_timestamp, session_id))
         
+        # بررسی تعداد ردیف‌های بروز شده
+        rows_updated = cursor.rowcount
+        logger.info(f"🔍 ردیف‌های بروز شده: {rows_updated}")
+        
+        if rows_updated == 0:
+            logger.error(f"❌ هیچ ردیفی بروز نشد. جلسه ممکن است قبلاً تکمیل شده باشد")
+            return None
+        
+        # گرفتن اطلاعات بازگشتی
+        result = cursor.fetchone()
         if not result:
-            logger.error(f"❌ بروزرسانی جلسه ناموفق بود")
+            logger.error(f"❌ اطلاعات بازگشتی از UPDATE دریافت نشد")
             return None
         
         user_id, subject, topic, minutes, start_time = result
         
-        # به‌روزرسانی آمار کاربر
+        # ۳. به‌روزرسانی آمار کاربر
         try:
-            query = """
+            query_user = """
             UPDATE users
             SET 
                 total_study_time = total_study_time + %s,
                 total_sessions = total_sessions + 1
             WHERE user_id = %s
             """
-            rows_updated = db.execute_query(query, (minutes, user_id))
-            logger.info(f"✅ آمار کاربر {user_id} بروزرسانی شد: {rows_updated} رکورد")
+            cursor.execute(query_user, (minutes, user_id))
+            user_rows = cursor.rowcount
+            logger.info(f"✅ آمار کاربر {user_id} بروزرسانی شد: {user_rows} رکورد")
         except Exception as e:
             logger.warning(f"⚠️ خطا در بروزرسانی آمار کاربر {user_id}: {e}")
         
-        # به‌روزرسانی رتبه‌بندی روزانه
+        # ۴. به‌روزرسانی رتبه‌بندی روزانه
         try:
             date_str, _ = get_iran_time()
-            query = """
+            query_ranking = """
             INSERT INTO daily_rankings (user_id, date, total_minutes)
             VALUES (%s, %s, %s)
             ON CONFLICT (user_id, date) DO UPDATE SET
                 total_minutes = daily_rankings.total_minutes + EXCLUDED.total_minutes
             """
-            db.execute_query(query, (user_id, date_str, minutes))
+            cursor.execute(query_ranking, (user_id, date_str, minutes))
             logger.info(f"✅ رتبه‌بندی روزانه برای کاربر {user_id} بروزرسانی شد")
         except Exception as e:
             logger.warning(f"⚠️ خطا در بروزرسانی رتبه‌بندی: {e}")
+        
+        # commit همه تغییرات
+        conn.commit()
         
         session_data = {
             "user_id": user_id,
@@ -576,7 +627,15 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
         
     except Exception as e:
         logger.error(f"❌ خطا در تکمیل جلسه مطالعه: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
         return None
+        
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            db.return_connection(conn)
 
 def get_user_sessions(user_id: int, limit: int = 10) -> List[Dict]:
     """دریافت جلسات اخیر کاربر"""

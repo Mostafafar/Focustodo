@@ -2428,7 +2428,7 @@ def main() -> None:
     application.add_handler(CommandHandler("skip", skip_command))
     
     # ثبت هندلرهای پیام
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CommandHandler("sessions", debug_sessions_command))

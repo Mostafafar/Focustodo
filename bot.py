@@ -1557,9 +1557,36 @@ async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """رد شدن از مرحله توضیح فایل"""
+    """رد شدن از مرحله"""
     user_id = update.effective_user.id
     
+    # اگر در مرحله پیام ثبت‌نام هستیم
+    if context.user_data.get("registration_step") == "message":
+        grade = context.user_data.get("grade")
+        field = context.user_data.get("field")
+        
+        if register_user(user_id, update.effective_user.username, grade, field, ""):
+            await update.message.reply_text(
+                "✅ درخواست شما ثبت شد!\n\n"
+                "📋 اطلاعات ثبت‌نام:\n"
+                f"🎓 پایه: {grade}\n"
+                f"🧪 رشته: {field}\n\n"
+                "⏳ درخواست شما برای ادمین ارسال شد.\n"
+                "پس از تأیید، می‌توانید از ربات استفاده کنید.\n\n"
+                "برای بررسی وضعیت /start را بزنید.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ خطا در ثبت اطلاعات.\n"
+                "لطفا مجدد تلاش کنید.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
+        context.user_data.clear()
+        return
+    
+    # اگر در مرحله توضیح فایل هستیم (کد قبلی)
     if not is_admin(user_id) or "awaiting_file" not in context.user_data:
         await update.message.reply_text("❌ دستور نامعتبر.")
         return

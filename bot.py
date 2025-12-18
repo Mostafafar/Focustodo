@@ -1791,36 +1791,112 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info(f"📝 دریافت پیام متنی از کاربر {user_id}: '{text}'")
     logger.info(f"🔍 وضعیت user_data: {context.user_data}")
     
-    # 1. ثبت‌نام کاربر جدید
-    if context.user_data.get("awaiting_registration"):
-        lines = text.split('\n')
-        if len(lines) >= 3:
-            grade = lines[0].strip()
-            field = lines[1].strip()
-            message = '\n'.join(lines[2:]).strip()
-            
-            if register_user(user_id, update.effective_user.username, grade, field, message):
-                await update.message.reply_text(
-                    "✅ درخواست شما ثبت شد!\n\n"
-                    "⏳ درخواست شما برای ادمین ارسال شد.\n"
-                    "پس از تأیید، می‌توانید از ربات استفاده کنید.\n\n"
-                    "برای بررسی وضعیت /start را بزنید."
-                )
-            else:
-                await update.message.reply_text(
-                    "❌ خطا در ثبت اطلاعات.\n"
-                    "لطفا مجدد تلاش کنید."
-                )
-            
-            context.user_data.clear()
-        else:
+    # 1. ثبت‌نام کاربر جدید (مرحله 1: انتخاب پایه)
+    if context.user_data.get("registration_step") == "grade":
+        valid_grades = ["دهم", "یازدهم", "دوازدهم", "فارغ‌التحصیل", "دانشجو"]
+        
+        if text == "❌ لغو ثبت‌نام":
             await update.message.reply_text(
-                "❌ فرمت پیام صحیح نیست.\n"
-                "لطفا به فرمت زیر ارسال کنید:\n\n"
-                "پایه\nرشته\nپیام"
+                "❌ ثبت‌نام لغو شد.\n\n"
+                "برای شروع مجدد /start را بزنید.",
+                reply_markup=ReplyKeyboardRemove()
             )
+            context.user_data.clear()
+            return
+        
+        if text not in valid_grades:
+            await update.message.reply_text(
+                "❌ لطفا یکی از پایه‌های نمایش‌داده‌شده را انتخاب کنید.",
+                reply_markup=get_grade_keyboard()
+            )
+            return
+        
+        context.user_data["grade"] = text
+        context.user_data["registration_step"] = "field"
+        
+        await update.message.reply_text(
+            f"✅ پایه تحصیلی: **{text}**\n\n"
+            f"🧪 **لطفا رشته تحصیلی خود را انتخاب کنید:**",
+            reply_markup=get_field_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
+    # 2. ثبت‌نام کاربر جدید (مرحله 2: انتخاب رشته)
+    if context.user_data.get("registration_step") == "field":
+        valid_fields = ["ریاضی", "انسانی", "تجربی", "سایر"]
+        
+        if text == "❌ لغو ثبت‌نام":
+            await update.message.reply_text(
+                "❌ ثبت‌نام لغو شد.\n\n"
+                "برای شروع مجدد /start را بزنید.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            context.user_data.clear()
+            return
+        
+        if text not in valid_fields:
+            await update.message.reply_text(
+                "❌ لطفا یکی از رشته‌های نمایش‌داده‌شده را انتخاب کنید.",
+                reply_markup=get_field_keyboard()
+            )
+            return
+        
+        context.user_data["field"] = text
+        context.user_data["registration_step"] = "message"
+        
+        await update.message.reply_text(
+            f"✅ اطلاعات شما:\n"
+            f"🎓 پایه: {context.user_data['grade']}\n"
+            f"🧪 رشته: {text}\n\n"
+            f"📝 **لطفا یک پیام کوتاه درباره خودتان بنویسید:**\n"
+            f"(حداکثر ۲۰۰ کاراکتر)\n\n"
+            f"مثال: علاقه‌مند به یادگیری و پیشرفت\n"
+            f"یا: دانش‌آموز علاقه‌مند به ریاضی\n\n"
+            f"برای رد شدن از این مرحله /skip را بزنید.",
+            reply_markup=get_cancel_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # 3. ثبت‌نام کاربر جدید (مرحله 3: پیام شخصی)
+    if context.user_data.get("registration_step") == "message":
+        if text == "❌ لغو ثبت‌نام":
+            await update.message.reply_text(
+                "❌ ثبت‌نام لغو شد.\n\n"
+                "برای شروع مجدد /start را بزنید.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            context.user_data.clear()
+            return
+        
+        message = text[:200]  # محدودیت ۲۰۰ کاراکتر
+        grade = context.user_data.get("grade")
+        field = context.user_data.get("field")
+        
+        if register_user(user_id, update.effective_user.username, grade, field, message):
+            await update.message.reply_text(
+                "✅ درخواست شما ثبت شد!\n\n"
+                "📋 اطلاعات ثبت‌نام:\n"
+                f"🎓 پایه: {grade}\n"
+                f"🧪 رشته: {field}\n"
+                f"📝 پیام: {message}\n\n"
+                "⏳ درخواست شما برای ادمین ارسال شد.\n"
+                "پس از تأیید، می‌توانید از ربات استفاده کنید.\n\n"
+                "برای بررسی وضعیت /start را بزنید.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ خطا در ثبت اطلاعات.\n"
+                "لطفا مجدد تلاش کنید.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
+        context.user_data.clear()
+        return
+    
+
     # 2. بروزرسانی پایه کاربر (قسمت 1)
     if context.user_data.get("awaiting_user_grade"):
         valid_grades = ["دهم", "یازدهم", "دوازدهم", "فارغ‌التحصیل"]

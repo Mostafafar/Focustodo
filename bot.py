@@ -2651,10 +2651,15 @@ async def auto_complete_study(context) -> None:
 def main() -> None:
     """تابع اصلی اجرای ربات"""
     try:
+        print("🚀 شروع راه‌اندازی ربات...")
+        
         # ایجاد برنامه
+        print("🔧 ایجاد Application...")
         application = Application.builder().token(TOKEN).build()
+        print("✅ Application ایجاد شد")
         
         # ثبت هندلرهای دستورات
+        print("🔧 ثبت هندلرهای دستورات...")
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(CommandHandler("admin", admin_command))
         application.add_handler(CommandHandler("active", active_command))
@@ -2662,11 +2667,12 @@ def main() -> None:
         application.add_handler(CommandHandler("addfile", addfile_command))
         application.add_handler(CommandHandler("skip", skip_command))
         
-        # اضافه کردن دستورات جدید مدیریت کاربران
+        # دستورات جدید
         application.add_handler(CommandHandler("updateuser", updateuser_command))
         application.add_handler(CommandHandler("userinfo", userinfo_command))
         
         # ثبت هندلرهای پیام
+        print("🔧 ثبت هندلرهای پیام...")
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         application.add_handler(CommandHandler("sessions", debug_sessions_command))
@@ -2675,7 +2681,10 @@ def main() -> None:
         application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
         
         # ثبت هندلرهای کال‌بک
+        print("🔧 ثبت هندلرهای کال‌بک...")
         application.add_handler(CallbackQueryHandler(handle_callback))
+        
+        print("✅ همه هندلرها ثبت شدند")
         
         # راه‌اندازی ربات
         logger.info("✅ ربات در حال راه‌اندازی...")
@@ -2686,16 +2695,22 @@ def main() -> None:
         print(f"🗄️ دیتابیس: PostgreSQL")
         print("=" * 50)
         
-        # راه‌اندازی polling
+        # راه‌اندازی polling با تنظیمات خاص
+        print("🔄 شروع Polling...")
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
+            drop_pending_updates=True,
+            poll_interval=2,  # افزایش فاصله polling
+            timeout=30,
+            close_loop=False  # این تنظیم را اضافه کنید
         )
         
+        print("✅ Polling شروع شد")
+        
     except KeyboardInterrupt:
-        logger.info("⏹️ ربات توسط کاربر متوقف شد")
         print("\n⏹️ ربات متوقف شد")
     except Exception as e:
-        logger.error(f"❌ خطای بحرانی: {e}")
-        print(f"\n❌ خطا: {e}")
-        raise
+        print(f"❌ خطای بحرانی: {e}")
+        import traceback
+        traceback.print_exc()
+        raise SystemExit(1)

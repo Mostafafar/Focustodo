@@ -491,7 +491,7 @@ async def debug_sessions_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"❌ خطا: {e}")
 
 # در main() اضافه کنید:
-application.add_handler(CommandHandler("sessions", debug_sessions_command))
+
 
 def start_study_session(user_id: int, subject: str, topic: str, minutes: int) -> Optional[int]:
     """شروع جلسه مطالعه جدید"""

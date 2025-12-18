@@ -11,7 +11,7 @@ import psycopg2
 from psycopg2 import pool
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton
+    ReplyKeyboardMarkup, KeyboardButton,ReplyKeyboardRemove
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -216,7 +216,28 @@ db = Database()
 # -----------------------------------------------------------
 # توابع کمکی
 # -----------------------------------------------------------
+def get_grade_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد انتخاب پایه تحصیلی"""
+    keyboard = [
+        [KeyboardButton("دهم")],
+        [KeyboardButton("یازدهم")],
+        [KeyboardButton("فارغ‌التحصیل/دوازدهم")],
+        [KeyboardButton("دانشجو")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
+def get_field_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد انتخاب رشته"""
+    keyboard = [
+        [KeyboardButton("ریاضی"), KeyboardButton("انسانی")],
+        [KeyboardButton("تجربی"), KeyboardButton("سایر")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+def get_cancel_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد لغو"""
+    keyboard = [[KeyboardButton("❌ لغو ثبت‌نام")]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 def get_iran_time() -> Tuple[str, str]:
     """دریافت تاریخ و زمان ایران"""
     now = datetime.now(IRAN_TZ)

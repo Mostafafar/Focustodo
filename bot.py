@@ -1465,11 +1465,13 @@ async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # هندلرهای پیام متنی
 # -----------------------------------------------------------
 
-
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """پردازش پیام‌های متنی"""
     user_id = update.effective_user.id
     text = update.message.text.strip()
+    
+    logger.info(f"📝 دریافت پیام متنی از کاربر {user_id}: '{text}'")
+    logger.info(f"🔍 وضعیت user_data: {context.user_data}")
     
     # ثبت‌نام کاربر جدید
     if context.user_data.get("awaiting_registration"):
@@ -1500,7 +1502,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "پایه\nرشته\nپیام"
             )
         return
-    # ۲. درس دلخواه (سایر)
+    
+    # درس دلخواه (سایر)
     if context.user_data.get("awaiting_custom_subject"):
         if len(text) < 2 or len(text) > 50:
             await update.message.reply_text(
@@ -1520,7 +1523,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # ۲. مبحث مطالعه (مهم: این باید قبل از awaiting_custom_time باشد)
+    # مبحث مطالعه
     if context.user_data.get("awaiting_topic"):
         topic = text
         subject = context.user_data.get("selected_subject", "نامشخص")
@@ -1567,7 +1570,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         return
     
-    # ۳. زمان دلخواه (بعد از مبحث)
+    # زمان دلخواه
     if context.user_data.get("awaiting_custom_time"):
         try:
             minutes = int(text)
@@ -1581,7 +1584,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
             else:
                 context.user_data["selected_time"] = minutes
-                context.user_data["awaiting_topic"] = True  # 🔥 اینجا درست تنظیم شود
+                context.user_data["awaiting_topic"] = True
+                context.user_data.pop("awaiting_custom_time", None)  # حذف این حالت
                 
                 subject = context.user_data.get("selected_subject", "نامشخص")
                 await update.message.reply_text(
@@ -1590,9 +1594,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     f"✏️ لطفا مبحث مطالعه را وارد کنید:\n"
                     f"(مثال: حل مسائل فصل ۳)"
                 )
-                
-                # پاک کردن وضعیت زمان
-                context.user_data.pop("awaiting_custom_time", None)
         except ValueError:
             await update.message.reply_text(
                 "❌ لطفا یک عدد وارد کنید.\n"
@@ -1600,11 +1601,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         return
     
-    # ۴. اگر پیام متنی دیگر بود
-    await update.message.reply_text(
-        "لطفا از منوی ربات استفاده کنید.",
-        reply_markup=get_main_menu()
-            )
     # توضیح فایل برای آپلود توسط ادمین
     if context.user_data.get("awaiting_file_description"):
         context.user_data["awaiting_file"]["description"] = text
@@ -1626,7 +1622,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         "لطفا از منوی ربات استفاده کنید.",
         reply_markup=get_main_menu()
-    )
+                )
+
+            
+
+    # توضیح فایل برای آپلود توسط ادمین
+
+
 
 # -----------------------------------------------------------
 # هندلرهای فایل

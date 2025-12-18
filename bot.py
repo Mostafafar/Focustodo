@@ -739,7 +739,7 @@ def get_today_rankings() -> List[Dict]:
             for row in results:
                 rankings.append({
                     "user_id": row[0],
-                    "username": row[1],
+                    "username": row[1],  # ✅ اینجا نام کاربری را برمی‌گرداند
                     "grade": row[2],
                     "field": row[3],
                     "total_minutes": row[4]

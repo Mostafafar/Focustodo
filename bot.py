@@ -1985,9 +1985,20 @@ async def show_subject_files(query, user_id: int, subject: str) -> None:
     text = f"📚 منابع {subject}\n\n"
     
     for i, file in enumerate(files[:5], 1):
-        text += f"{i}. **{file['topic']}**\n"
-        if file['description']:
-            text += f"   📝 {file['description'][:50]}"
+        # اولویت: 1. مبحث، 2. نام فایل (بدون پسوند)
+        if file['topic'] and file['topic'].strip():
+            title = file['topic']
+        else:
+            title = os.path.splitext(file['file_name'])[0]
+        
+        text += f"{i}. **{title}**\n"
+        
+        # نمایش نام اصلی فایل
+        text += f"   📄 {file['file_name']}\n"
+        
+        if file['description'] and file['description'].strip():
+            desc = file['description'][:50]
+            text += f"   📝 {desc}"
             if len(file['description']) > 50:
                 text += "..."
             text += "\n"
@@ -2000,9 +2011,12 @@ async def show_subject_files(query, user_id: int, subject: str) -> None:
     
     keyboard = []
     for file in files[:3]:  # حداکثر 3 فایل اول
-        button_text = f"⬇️ {file['topic'][:15]}"
-        if len(file['topic']) > 15:
-            button_text += "..."
+        # متن دکمه: نام فایل (کوتاه شده)
+        file_name_no_ext = os.path.splitext(file['file_name'])[0]
+        button_text = f"⬇️ {file_name_no_ext[:15]}"
+        
+        if len(file_name_no_ext) > 15:
+            button_text = button_text[:15] + "..."
         
         keyboard.append([
             InlineKeyboardButton(

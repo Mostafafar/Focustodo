@@ -441,6 +441,30 @@ def get_user_info(user_id: int) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"خطا در دریافت اطلاعات کاربر: {e}")
         return None
+# -----------------------------------------------------------
+# مدیریت کاربران (ادامه)
+# -----------------------------------------------------------
+
+def update_user_info(user_id: int, grade: str, field: str) -> bool:
+    """بروزرسانی اطلاعات کاربر"""
+    try:
+        query = """
+        UPDATE users
+        SET grade = %s, field = %s
+        WHERE user_id = %s
+        """
+        rows_updated = db.execute_query(query, (grade, field, user_id))
+        
+        if rows_updated > 0:
+            logger.info(f"✅ اطلاعات کاربر {user_id} بروزرسانی شد: {grade} {field}")
+            return True
+        else:
+            logger.warning(f"⚠️ کاربر {user_id} یافت نشد")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ خطا در بروزرسانی اطلاعات کاربر: {e}")
+        return False
 
 # -----------------------------------------------------------
 # مدیریت جلسات مطالعه
@@ -1460,7 +1484,216 @@ async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "✅ مرحله توضیح رد شد.\n"
         "📎 لطفا فایل را ارسال کنید..."
     )
+# -----------------------------------------------------------
+# هندلرهای دستورات (ادامه)
+# -----------------------------------------------------------
 
+async def updateuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بروزرسانی اطلاعات کاربر توسط ادمین"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "⚠️ فرمت صحیح:\n"
+            "/updateuser <آیدی کاربر> <پایه جدید> <رشته جدید>\n\n"
+            "مثال:\n"
+            "/updateuser 6680287530 دوازدهم تجربی\n\n"
+            "📋 پایه‌های مجاز:\n"
+            "دهم، یازدهم، دوازدهم، فارغ‌التحصیل\n\n"
+            "📋 رشته‌های مجاز:\n"
+            "تجربی، ریاضی، انسانی، هنر، سایر"
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        new_grade = context.args[1]
+        new_field = context.args[2]
+        
+        # بررسی اعتبار پایه و رشته
+        valid_grades = ["دهم", "یازدهم", "دوازدهم", "فارغ‌التحصیل"]
+        valid_fields = ["تجربی", "ریاضی", "انسانی", "هنر", "سایر"]
+        
+        if new_grade not in valid_grades:
+            await update.message.reply_text(
+                f"❌ پایه نامعتبر!\n"
+                f"پایه‌های مجاز: {', '.join(valid_grades)}"
+            )
+            return
+        
+        if new_field not in valid_fields:
+            await update.message.reply_text(
+                f"❌ رشته نامعتبر!\n"
+                f"رشته‌های مجاز: {', '.join(valid_fields)}"
+            )
+            return
+        
+        # دریافت اطلاعات فعلی کاربر
+        query = """
+        SELECT username, grade, field 
+        FROM users 
+        WHERE user_id = %s
+        """
+        user_info = db.execute_query(query, (target_user_id,), fetch=True)
+        
+        if not user_info:
+            await update.message.reply_text(
+                f"❌ کاربر با آیدی {target_user_id} یافت نشد."
+            )
+            return
+        
+        username, old_grade, old_field = user_info
+        
+        # بروزرسانی اطلاعات
+        if update_user_info(target_user_id, new_grade, new_field):
+            
+            # اطلاع به کاربر
+            try:
+                await context.bot.send_message(
+                    target_user_id,
+                    f"📋 **اطلاعات حساب شما بروزرسانی شد!**\n\n"
+                    f"👤 کاربر: {username}\n"
+                    f"🎓 پایه قبلی: {old_grade} → جدید: {new_grade}\n"
+                    f"🧪 رشته قبلی: {old_field} → جدید: {new_field}\n\n"
+                    f"✅ تغییرات توسط ادمین اعمال شد.\n"
+                    f"فایل‌های در دسترس شما مطابق با پایه و رشته جدید به‌روزرسانی شدند."
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ خطا در اطلاع به کاربر {target_user_id}: {e}")
+            
+            await update.message.reply_text(
+                f"✅ اطلاعات کاربر بروزرسانی شد:\n\n"
+                f"👤 کاربر: {username}\n"
+                f"🆔 آیدی: {target_user_id}\n"
+                f"🎓 پایه: {old_grade} → {new_grade}\n"
+                f"🧪 رشته: {old_field} → {new_field}"
+            )
+        else:
+            await update.message.reply_text(
+                "❌ خطا در بروزرسانی اطلاعات کاربر."
+            )
+        
+    except ValueError:
+        await update.message.reply_text("❌ آیدی کاربر باید عددی باشد.")
+    except Exception as e:
+        logger.error(f"خطا در بروزرسانی کاربر: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
+async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش اطلاعات کاربر"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ لطفا آیدی کاربر را وارد کنید:\n"
+            "/userinfo <آیدی کاربر>\n\n"
+            "یا بدون آیدی برای مشاهده اطلاعات خودتان:\n"
+            "/userinfo"
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        
+        # دریافت اطلاعات کاربر از جدول users
+        query = """
+        SELECT user_id, username, grade, field, message, 
+               is_active, registration_date, 
+               total_study_time, total_sessions, created_at
+        FROM users
+        WHERE user_id = %s
+        """
+        user_data = db.execute_query(query, (target_user_id,), fetch=True)
+        
+        if not user_data:
+            await update.message.reply_text(f"❌ کاربر با آیدی {target_user_id} یافت نشد.")
+            return
+        
+        # دریافت آمار امروز
+        date_str, _ = get_iran_time()
+        query_today = """
+        SELECT total_minutes FROM daily_rankings
+        WHERE user_id = %s AND date = %s
+        """
+        today_stats = db.execute_query(query_today, (target_user_id, date_str), fetch=True)
+        
+        # دریافت آخرین جلسات
+        query_sessions = """
+        SELECT subject, topic, minutes, date 
+        FROM study_sessions 
+        WHERE user_id = %s 
+        ORDER BY session_id DESC 
+        LIMIT 3
+        """
+        sessions = db.execute_query(query_sessions, (target_user_id,), fetchall=True)
+        
+        # فرمت‌بندی اطلاعات
+        user_id, username, grade, field, message, is_active, reg_date, \
+        total_time, total_sessions, created_at = user_data
+        
+        text = f"📋 **اطلاعات کاربر**\n\n"
+        text += f"👤 نام: {username or 'نامشخص'}\n"
+        text += f"🆔 آیدی: `{user_id}`\n"
+        text += f"🎓 پایه: {grade or 'نامشخص'}\n"
+        text += f"🧪 رشته: {field or 'نامشخص'}\n"
+        text += f"📅 تاریخ ثبت‌نام: {reg_date or 'نامشخص'}\n"
+        text += f"✅ وضعیت: {'فعال' if is_active else 'غیرفعال'}\n\n"
+        
+        text += f"📊 **آمار کلی:**\n"
+        text += f"⏰ مجموع مطالعه: {format_time(total_time or 0)}\n"
+        text += f"📖 تعداد جلسات: {total_sessions or 0}\n"
+        
+        if today_stats:
+            today_minutes = today_stats[0]
+            text += f"🎯 مطالعه امروز: {format_time(today_minutes)}\n"
+        else:
+            text += f"🎯 مطالعه امروز: ۰ دقیقه\n"
+        
+        if message and message.strip():
+            text += f"\n📝 پیام کاربر:\n`{message[:100]}`\n"
+            if len(message) > 100:
+                text += "...\n"
+        
+        if sessions:
+            text += f"\n📚 **آخرین جلسات:**\n"
+            for i, session in enumerate(sessions, 1):
+                subject, topic, minutes, date = session
+                text += f"{i}. {subject} - {topic[:30]} ({minutes}د) در {date}\n"
+        
+        # ایجاد کیبورد
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "🔄 بروزرسانی اطلاعات", 
+                    callback_data=f"edituser_{target_user_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ فعال‌سازی" if not is_active else "❌ غیرفعال‌سازی", 
+                    callback_data=f"toggleactive_{target_user_id}"
+                )
+            ]
+        ]
+        
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+    except ValueError:
+        await update.message.reply_text("❌ آیدی باید عددی باشد.")
+    except Exception as e:
+        logger.error(f"خطا در دریافت اطلاعات کاربر: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
 # -----------------------------------------------------------
 # هندلرهای پیام متنی
 # -----------------------------------------------------------
@@ -2429,15 +2662,19 @@ def main() -> None:
     application.add_handler(CommandHandler("addfile", addfile_command))
     application.add_handler(CommandHandler("skip", skip_command))
     
-    # ثبت هندلرهای پیام
+    # دستورات جدید
+    application.add_handler(CommandHandler("updateuser", updateuser_command))
+    application.add_handler(CommandHandler("userinfo", userinfo_command))
     
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    # سایر دستورات دیباگ
     application.add_handler(CommandHandler("sessions", debug_sessions_command))
     application.add_handler(CommandHandler("debugfiles", debug_files_command))
     application.add_handler(CommandHandler("checkdb", check_database_command))
     application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
-
+    
+    # ثبت هندلرهای پیام
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     # ثبت هندلرهای کال‌بک
     application.add_handler(CallbackQueryHandler(handle_callback))
@@ -2455,6 +2692,3 @@ def main() -> None:
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
     )
-
-if __name__ == '__main__':
-    main()

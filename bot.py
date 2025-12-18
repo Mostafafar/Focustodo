@@ -1950,9 +1950,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.effective_user.id
     callback_data = query.data
     
+    # 🔥 اضافه کردن این بخش برای هندلرهای جدید
+    if callback_data.startswith("edituser_"):
+        # بروزرسانی اطلاعات کاربر
+        target_user_id = int(callback_data.replace("edituser_", ""))
+        await handle_edit_user(query, context, target_user_id, user_id)
+        return
+    
+    elif callback_data.startswith("toggleactive_"):
+        # فعال/غیرفعال کردن کاربر
+        target_user_id = int(callback_data.replace("toggleactive_", ""))
+        await handle_toggle_active(query, context, target_user_id, user_id)
+        return
+    
     # منوی اصلی
-    if callback_data == "main_menu":
+    elif callback_data == "main_menu":
         await show_main_menu(query)
+    # ... ادامه کد موجود
     
     # شروع مطالعه
     elif callback_data == "start_study":
@@ -2025,7 +2039,90 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif callback_data.startswith("delete_file_"):
         file_id = int(callback_data.replace("delete_file_", ""))
         await delete_file_process(query, file_id, context)
+async def handle_edit_user(query, context, target_user_id: int, admin_id: int) -> None:
+    """بروزرسانی اطلاعات کاربر"""
+    if not is_admin(admin_id):
+        await query.answer("❌ دسترسی denied.", show_alert=True)
+        return
+    
+    # ذخیره اطلاعات در context برای استفاده در مرحله بعد
+    context.user_data["editing_user"] = target_user_id
+    context.user_data["awaiting_user_grade"] = True
+    
+    # دریافت اطلاعات فعلی کاربر
+    query_db = """
+    SELECT username, grade, field 
+    FROM users 
+    WHERE user_id = %s
+    """
+    user_info = db.execute_query(query_db, (target_user_id,), fetch=True)
+    
+    if not user_info:
+        await query.answer("❌ کاربر یافت نشد.", show_alert=True)
+        return
+    
+    username, current_grade, current_field = user_info
+    
+    await query.edit_message_text(
+        f"✏️ **بروزرسانی اطلاعات کاربر**\n\n"
+        f"👤 کاربر: {username}\n"
+        f"🆔 آیدی: {target_user_id}\n"
+        f"🎓 پایه فعلی: {current_grade}\n"
+        f"🧪 رشته فعلی: {current_field}\n\n"
+        f"لطفا پایه جدید را وارد کنید:\n"
+        f"(دهم، یازدهم، دوازدهم، فارغ‌التحصیل)",
+        parse_mode=ParseMode.MARKDOWN
+    )
 
+async def handle_toggle_active(query, context, target_user_id: int, admin_id: int) -> None:
+    """فعال/غیرفعال کردن کاربر"""
+    if not is_admin(admin_id):
+        await query.answer("❌ دسترسی denied.", show_alert=True)
+        return
+    
+    # بررسی وضعیت فعلی کاربر
+    query_check = "SELECT is_active, username FROM users WHERE user_id = %s"
+    result = db.execute_query(query_check, (target_user_id,), fetch=True)
+    
+    if not result:
+        await query.answer("❌ کاربر یافت نشد.", show_alert=True)
+        return
+    
+    is_active, username = result
+    
+    # تغییر وضعیت
+    if is_active:
+        # غیرفعال کردن
+        if deactivate_user(target_user_id):
+            await query.edit_message_text(
+                f"✅ کاربر غیرفعال شد:\n\n"
+                f"👤 کاربر: {username}\n"
+                f"🆔 آیدی: {target_user_id}\n"
+                f"📅 زمان: {datetime.now(IRAN_TZ).strftime('%Y/%m/%d %H:%M')}\n\n"
+                f"این کاربر دیگر نمی‌تواند از ربات استفاده کند.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 فعال‌سازی", callback_data=f"toggleactive_{target_user_id}"),
+                    InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")
+                ]])
+            )
+        else:
+            await query.answer("❌ خطا در غیرفعال‌سازی.", show_alert=True)
+    else:
+        # فعال کردن
+        if activate_user(target_user_id):
+            await query.edit_message_text(
+                f"✅ کاربر فعال شد:\n\n"
+                f"👤 کاربر: {username}\n"
+                f"🆔 آیدی: {target_user_id}\n"
+                f"📅 زمان: {datetime.now(IRAN_TZ).strftime('%Y/%m/%d %H:%M')}\n\n"
+                f"این کاربر می‌تواند از ربات استفاده کند.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 غیرفعال‌سازی", callback_data=f"toggleactive_{target_user_id}"),
+                    InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")
+                ]])
+            )
+        else:
+            await query.answer("❌ خطا در فعال‌سازی.", show_alert=True)
 async def show_main_menu(query) -> None:
     """نمایش منوی اصلی"""
     await query.edit_message_text(

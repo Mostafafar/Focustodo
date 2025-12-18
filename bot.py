@@ -1698,6 +1698,7 @@ async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # هندلرهای پیام متنی
 # -----------------------------------------------------------
 
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """پردازش پیام‌های متنی"""
     user_id = update.effective_user.id
@@ -1706,7 +1707,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info(f"📝 دریافت پیام متنی از کاربر {user_id}: '{text}'")
     logger.info(f"🔍 وضعیت user_data: {context.user_data}")
     
-    # ثبت‌نام کاربر جدید
+    # 1. ثبت‌نام کاربر جدید
     if context.user_data.get("awaiting_registration"):
         lines = text.split('\n')
         if len(lines) >= 3:
@@ -1736,7 +1737,101 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         return
     
-    # درس دلخواه (سایر)
+    # 2. بروزرسانی پایه کاربر (قسمت 1)
+    if context.user_data.get("awaiting_user_grade"):
+        valid_grades = ["دهم", "یازدهم", "دوازدهم", "فارغ‌التحصیل"]
+        
+        if text not in valid_grades:
+            await update.message.reply_text(
+                f"❌ پایه نامعتبر!\n"
+                f"پایه‌های مجاز: {', '.join(valid_grades)}\n"
+                f"لطفا مجدد وارد کنید:"
+            )
+            return
+        
+        context.user_data["new_grade"] = text
+        context.user_data["awaiting_user_grade"] = False
+        context.user_data["awaiting_user_field"] = True
+        
+        await update.message.reply_text(
+            f"✅ پایه ذخیره شد: {text}\n\n"
+            f"لطفا رشته جدید را وارد کنید:\n"
+            f"(تجربی، ریاضی، انسانی، هنر، سایر)"
+        )
+        return
+    
+    # 3. بروزرسانی رشته کاربر (قسمت 2)
+    if context.user_data.get("awaiting_user_field"):
+        valid_fields = ["تجربی", "ریاضی", "انسانی", "هنر", "سایر"]
+        
+        if text not in valid_fields:
+            await update.message.reply_text(
+                f"❌ رشته نامعتبر!\n"
+                f"رشته‌های مجاز: {', '.join(valid_fields)}\n"
+                f"لطفا مجدد وارد کنید:"
+            )
+            return
+        
+        new_field = text
+        new_grade = context.user_data["new_grade"]
+        target_user_id = context.user_data["editing_user"]
+        
+        # بروزرسانی اطلاعات
+        if update_user_info(target_user_id, new_grade, new_field):
+            # دریافت اطلاعات کاربر برای نمایش
+            query = """
+            SELECT username, grade, field 
+            FROM users 
+            WHERE user_id = %s
+            """
+            user_info = db.execute_query(query, (target_user_id,), fetch=True)
+            
+            if user_info:
+                username, old_grade, old_field = user_info
+                
+                # اطلاع به کاربر
+                try:
+                    await context.bot.send_message(
+                        target_user_id,
+                        f"📋 **اطلاعات حساب شما بروزرسانی شد!**\n\n"
+                        f"👤 کاربر: {username}\n"
+                        f"🎓 پایه قبلی: {old_grade} → جدید: {new_grade}\n"
+                        f"🧪 رشته قبلی: {old_field} → جدید: {new_field}\n\n"
+                        f"✅ تغییرات توسط ادمین اعمال شد.\n"
+                        f"فایل‌های در دسترس شما مطابق با پایه و رشته جدید به‌روزرسانی شدند."
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ خطا در اطلاع به کاربر {target_user_id}: {e}")
+                
+                await update.message.reply_text(
+                    f"✅ اطلاعات کاربر بروزرسانی شد:\n\n"
+                    f"👤 کاربر: {username}\n"
+                    f"🆔 آیدی: {target_user_id}\n"
+                    f"🎓 پایه: {old_grade} → {new_grade}\n"
+                    f"🧪 رشته: {old_field} → {new_field}",
+                    reply_markup=get_main_menu()
+                )
+            else:
+                await update.message.reply_text(
+                    f"✅ اطلاعات کاربر بروزرسانی شد:\n\n"
+                    f"🆔 آیدی: {target_user_id}\n"
+                    f"🎓 پایه جدید: {new_grade}\n"
+                    f"🧪 رشته جدید: {new_field}",
+                    reply_markup=get_main_menu()
+                )
+        else:
+            await update.message.reply_text(
+                "❌ خطا در بروزرسانی اطلاعات کاربر.",
+                reply_markup=get_main_menu()
+            )
+        
+        # پاک کردن وضعیت
+        context.user_data.pop("editing_user", None)
+        context.user_data.pop("new_grade", None)
+        context.user_data.pop("awaiting_user_field", None)
+        return
+    
+    # 4. درس دلخواه (سایر)
     if context.user_data.get("awaiting_custom_subject"):
         if len(text) < 2 or len(text) > 50:
             await update.message.reply_text(
@@ -1756,7 +1851,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # مبحث مطالعه
+    # 5. دلیل رد درخواست ثبت‌نام
+    if "rejecting_request" in context.user_data:
+        request_id = context.user_data["rejecting_request"]
+        admin_note = text
+        
+        if reject_registration(request_id, admin_note):
+            await update.message.reply_text(
+                f"✅ درخواست #{request_id} رد شد.\n"
+                f"دلیل: {admin_note}"
+            )
+        else:
+            await update.message.reply_text(
+                "❌ خطا در رد درخواست."
+            )
+        
+        context.user_data.pop("rejecting_request", None)
+        return
+    
+    # 6. مبحث مطالعه
     if context.user_data.get("awaiting_topic"):
         topic = text
         subject = context.user_data.get("selected_subject", "نامشخص")
@@ -1803,7 +1916,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         return
     
-    # زمان دلخواه
+    # 7. زمان دلخواه
     if context.user_data.get("awaiting_custom_time"):
         try:
             minutes = int(text)
@@ -1818,7 +1931,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             else:
                 context.user_data["selected_time"] = minutes
                 context.user_data["awaiting_topic"] = True
-                context.user_data.pop("awaiting_custom_time", None)  # حذف این حالت
+                context.user_data.pop("awaiting_custom_time", None)
                 
                 subject = context.user_data.get("selected_subject", "نامشخص")
                 await update.message.reply_text(
@@ -1834,7 +1947,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         return
     
-    # توضیح فایل برای آپلود توسط ادمین
+    # 8. توضیح فایل برای آپلود توسط ادمین
     if context.user_data.get("awaiting_file_description"):
         context.user_data["awaiting_file"]["description"] = text
         context.user_data["awaiting_file_document"] = True
@@ -1851,12 +1964,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # اگر پیام متنی دیگر بود
+    # 9. اگر پیام متنی دیگر بود
     await update.message.reply_text(
         "لطفا از منوی ربات استفاده کنید.",
         reply_markup=get_main_menu()
-                )
-
+    )
             
 
     # توضیح فایل برای آپلود توسط ادمین

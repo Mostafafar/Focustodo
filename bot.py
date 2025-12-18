@@ -2188,6 +2188,10 @@ async def auto_complete_study(context) -> None:
 # تابع اصلی
 # -----------------------------------------------------------
 
+# -----------------------------------------------------------
+# تابع اصلی
+# -----------------------------------------------------------
+
 def main() -> None:
     """تابع اصلی اجرای ربات"""
     # ایجاد برنامه
@@ -2200,6 +2204,12 @@ def main() -> None:
     application.add_handler(CommandHandler("deactive", deactive_command))
     application.add_handler(CommandHandler("addfile", addfile_command))
     application.add_handler(CommandHandler("skip", skip_command))
+    
+    # اضافه کردن دستورات دیباگ جدید
+    application.add_handler(CommandHandler("testfiles", test_files_command))
+    application.add_handler(CommandHandler("checkdb", checkdb_command))
+    application.add_handler(CommandHandler("debug", debug_command))
+    application.add_handler(CommandHandler("sessions", debug_sessions_command))
     
     # ثبت هندلرهای پیام
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

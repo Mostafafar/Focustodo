@@ -221,7 +221,8 @@ def get_grade_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("دهم")],
         [KeyboardButton("یازدهم")],
-        [KeyboardButton("فارغ‌التحصیل/دوازدهم")],
+        [KeyboardButton("دوازدهم")],
+        [KeyboardButton("فارغ‌التحصیل")],
         [KeyboardButton("دانشجو")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)

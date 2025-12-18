@@ -788,50 +788,88 @@ def get_user_rank_today(user_id: int) -> Tuple[Optional[int], Optional[int]]:
 # مدیریت فایل‌ها
 # -----------------------------------------------------------
 
-def add_file(
-    grade: str, field: str, subject: str, topic: str, 
-    description: str, telegram_file_id: str, file_name: str,
-    file_size: int, mime_type: str, uploader_id: int
-) -> Optional[Dict]:
+def add_file(grade: str, field: str, subject: str, topic: str, 
+             description: str, telegram_file_id: str, file_name: str,
+             file_size: int, mime_type: str, uploader_id: int) -> Optional[Dict]:
+    """افزودن فایل جدید به دیتابیس"""
+    conn = None
+    cursor = None
+    
     try:
+        logger.info(f"🔍 شروع اضافه کردن فایل به دیتابیس:")
+        logger.info(f"  🎓 پایه: {grade}")
+        logger.info(f"  🧪 رشته: {field}")
+        logger.info(f"  📚 درس: {subject}")
+        logger.info(f"  📄 نام فایل: {file_name}")
+        logger.info(f"  📦 حجم: {file_size}")
+        logger.info(f"  👤 آپلودکننده: {uploader_id}")
+        
+        upload_date, time_str = get_iran_time()
+        
+        # گرفتن connection مستقل برای دیباگ
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
         query = """
-        INSERT INTO files (
-            grade, field, subject, topic, description, 
-            telegram_file_id, file_name, file_size, mime_type, 
-            uploader_id
-        )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO files (grade, field, subject, topic, description, 
+                          telegram_file_id, file_name, file_size, mime_type, 
+                          upload_date, uploader_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING file_id, upload_date
         """
         
-        result = db.execute_query(query, (
+        params = (
             grade, field, subject, topic, description,
             telegram_file_id, file_name, file_size, mime_type,
-            uploader_id
-        ), fetch=True)
+            upload_date, uploader_id
+        )
+        
+        logger.info(f"🔍 اجرای کوئری INSERT...")
+        cursor.execute(query, params)
+        
+        # حتماً commit کنیم
+        conn.commit()
+        
+        result = cursor.fetchone()
         
         if result:
-            file_id, upload_timestamp = result
-            
-            display_date = upload_timestamp.strftime("%Y/%m/%d")
-            
-            return {
-                "file_id": file_id,
+            file_data = {
+                "file_id": result[0],
                 "grade": grade,
                 "field": field,
                 "subject": subject,
                 "topic": topic,
-                "description": description or "",
+                "description": description,
                 "file_name": file_name,
                 "file_size": file_size,
-                "upload_date": display_date
+                "upload_date": result[1]
             }
+            
+            logger.info(f"✅ فایل با موفقیت در دیتابیس ذخیره شد: {file_name} (ID: {result[0]})")
+            
+            # بررسی کنیم که واقعاً ذخیره شده
+            cursor.execute("SELECT COUNT(*) FROM files WHERE file_id = %s", (result[0],))
+            count = cursor.fetchone()[0]
+            logger.info(f"🔍 تأیید ذخیره‌سازی: {count} رکورد با ID {result[0]} وجود دارد")
+            
+            return file_data
         
+        logger.error("❌ هیچ نتیجه‌ای از INSERT برگشت داده نشد")
         return None
         
     except Exception as e:
-        logger.error(f"خطا در آپلود فایل: {e}")
+        logger.error(f"❌ خطا در آپلود فایل: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+            logger.info("🔁 Rollback انجام شد")
         return None
+        
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            db.return_connection(conn)
+            logger.info("🔌 Connection بازگردانده شد")
 
 def get_user_files(user_id: int) -> List[Dict]:
     """دریافت فایل‌های مرتبط با کاربر"""

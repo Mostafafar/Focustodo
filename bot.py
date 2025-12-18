@@ -2648,45 +2648,54 @@ async def auto_complete_study(context) -> None:
 # -----------------------------------------------------------
 # تابع اصلی
 # -----------------------------------------------------------
-
 def main() -> None:
     """تابع اصلی اجرای ربات"""
-    # ایجاد برنامه
-    application = Application.builder().token(TOKEN).build()
-    
-    # ثبت هندلرهای دستورات
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("admin", admin_command))
-    application.add_handler(CommandHandler("active", active_command))
-    application.add_handler(CommandHandler("deactive", deactive_command))
-    application.add_handler(CommandHandler("addfile", addfile_command))
-    application.add_handler(CommandHandler("skip", skip_command))
-    
-    # اضافه کردن دستورات جدید مدیریت کاربران
-    application.add_handler(CommandHandler("updateuser", updateuser_command))
-    application.add_handler(CommandHandler("userinfo", userinfo_command))
-    
-    # ثبت هندلرهای پیام
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    application.add_handler(CommandHandler("sessions", debug_sessions_command))
-    application.add_handler(CommandHandler("debugfiles", debug_files_command))
-    application.add_handler(CommandHandler("checkdb", check_database_command))
-    application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
-    
-    # ثبت هندلرهای کال‌بک
-    application.add_handler(CallbackQueryHandler(handle_callback))
-    
-    # راه‌اندازی ربات
-    logger.info("✅ ربات در حال راه‌اندازی...")
-    print("=" * 50)
-    print("🤖 ربات Focus Todo راه‌اندازی شد!")
-    print(f"👨‍💼 ادمین‌ها: {ADMIN_IDS}")
-    print(f"⏰ محدودیت زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
-    print(f"🗄️ دیتابیس: PostgreSQL")
-    print("=" * 50)
-    
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-            )
+    try:
+        # ایجاد برنامه
+        application = Application.builder().token(TOKEN).build()
+        
+        # ثبت هندلرهای دستورات
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("admin", admin_command))
+        application.add_handler(CommandHandler("active", active_command))
+        application.add_handler(CommandHandler("deactive", deactive_command))
+        application.add_handler(CommandHandler("addfile", addfile_command))
+        application.add_handler(CommandHandler("skip", skip_command))
+        
+        # اضافه کردن دستورات جدید مدیریت کاربران
+        application.add_handler(CommandHandler("updateuser", updateuser_command))
+        application.add_handler(CommandHandler("userinfo", userinfo_command))
+        
+        # ثبت هندلرهای پیام
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+        application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        application.add_handler(CommandHandler("sessions", debug_sessions_command))
+        application.add_handler(CommandHandler("debugfiles", debug_files_command))
+        application.add_handler(CommandHandler("checkdb", check_database_command))
+        application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
+        
+        # ثبت هندلرهای کال‌بک
+        application.add_handler(CallbackQueryHandler(handle_callback))
+        
+        # راه‌اندازی ربات
+        logger.info("✅ ربات در حال راه‌اندازی...")
+        print("=" * 50)
+        print("🤖 ربات Focus Todo راه‌اندازی شد!")
+        print(f"👨‍💼 ادمین‌ها: {ADMIN_IDS}")
+        print(f"⏰ محدودیت زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
+        print(f"🗄️ دیتابیس: PostgreSQL")
+        print("=" * 50)
+        
+        # راه‌اندازی polling
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        
+    except KeyboardInterrupt:
+        logger.info("⏹️ ربات توسط کاربر متوقف شد")
+        print("\n⏹️ ربات متوقف شد")
+    except Exception as e:
+        logger.error(f"❌ خطای بحرانی: {e}")
+        print(f"\n❌ خطا: {e}")
+        raise

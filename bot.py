@@ -445,6 +445,53 @@ def get_user_info(user_id: int) -> Optional[Dict]:
 # -----------------------------------------------------------
 # مدیریت جلسات مطالعه
 # -----------------------------------------------------------
+async def debug_sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بررسی جلسات مطالعه"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # آخرین ۱۰ جلسه
+        cursor.execute("""
+            SELECT session_id, user_id, subject, topic, minutes, 
+                   TO_TIMESTAMP(start_time) as start_time, completed
+            FROM study_sessions 
+            ORDER BY session_id DESC 
+            LIMIT 10
+        """)
+        sessions = cursor.fetchall()
+        
+        text = "🔍 آخرین جلسات مطالعه:\n\n"
+        
+        if sessions:
+            for session in sessions:
+                text += f"🆔 {session[0]}\n"
+                text += f"👤 کاربر: {session[1]}\n"
+                text += f"📚 درس: {session[2]}\n"
+                text += f"🎯 مبحث: {session[3]}\n"
+                text += f"⏰ زمان: {session[4]} دقیقه\n"
+                text += f"📅 شروع: {session[5]}\n"
+                text += f"✅ تکمیل: {'بله' if session[6] else 'خیر'}\n"
+                text += "─" * 20 + "\n"
+        else:
+            text += "📭 هیچ جلسه‌ای ثبت نشده\n"
+        
+        cursor.close()
+        db.return_connection(conn)
+        
+        await update.message.reply_text(text)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطا: {e}")
+
+# در main() اضافه کنید:
+application.add_handler(CommandHandler("sessions", debug_sessions_command))
 
 def start_study_session(user_id: int, subject: str, topic: str, minutes: int) -> Optional[int]:
     """شروع جلسه مطالعه جدید"""

@@ -467,6 +467,67 @@ def get_user_info(user_id: int) -> Optional[Dict]:
 # -----------------------------------------------------------
 # مدیریت کاربران (ادامه)
 # -----------------------------------------------------------
+async def send_to_all_users(context: ContextTypes.DEFAULT_TYPE, message: str) -> None:
+    """ارسال پیام به همه کاربران (حتی ثبت‌نام نکرده‌ها)"""
+    # دریافت تمام کاربرانی که حداقل یکبار استارت زده‌اند
+    query = """
+    SELECT user_id FROM registration_requests
+    UNION
+    SELECT user_id FROM users
+    """
+    results = db.execute_query(query, fetchall=True)
+    
+    if not results:
+        return
+    
+    users = [row[0] for row in results]
+    successful = 0
+    
+    for user_id in users:
+        try:
+            await context.bot.send_message(
+                user_id,
+                message,
+                parse_mode=ParseMode.MARKDOWN
+            )
+            successful += 1
+            
+            # تاخیر برای جلوگیری از محدودیت تلگرام
+            await asyncio.sleep(0.05)
+            
+        except Exception as e:
+            logger.error(f"خطا در ارسال به کاربر {user_id}: {e}")
+    
+    logger.info(f"✅ پیام به {successful}/{len(users)} کاربر ارسال شد")
+async def send_daily_top_ranks(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال ۳ رتبه برتر روز به همه کاربران"""
+    rankings = get_today_rankings()
+    date_str = datetime.now(IRAN_TZ).strftime("%Y/%m/%d")
+    
+    if not rankings or len(rankings) < 3:
+        return
+    
+    # ساخت پیام رتبه‌های برتر
+    message = "🏆 **رتبه‌های برتر امروز**\n\n"
+    message += f"📅 تاریخ: {date_str}\n\n"
+    
+    medals = ["🥇", "🥈", "🥉"]
+    for i, rank in enumerate(rankings[:3]):
+        hours = rank["total_minutes"] // 60
+        mins = rank["total_minutes"] % 60
+        time_display = f"{hours}س {mins}د" if hours > 0 else f"{mins}د"
+        
+        username = rank["username"] or "کاربر"
+        if username == "None":
+            username = "کاربر"
+        
+        message += f"{medals[i]} {username} ({rank['grade']} {rank['field']}): {time_display}\n"
+    
+    message += "\n🎯 فردا هم شرکت کنید!\n"
+    message += "برای ثبت مطالعه جدید: /start"
+    
+    # ارسال به همه کاربران
+    await send_to_all_users(context, message)
 
 def update_user_info(user_id: int, grade: str, field: str) -> bool:
     """بروزرسانی اطلاعات کاربر"""

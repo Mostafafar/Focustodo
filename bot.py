@@ -3197,78 +3197,81 @@ async def auto_complete_study(context) -> None:
 # -----------------------------------------------------------
 def main() -> None:
     """تابع اصلی اجرای ربات"""
+    # ایجاد برنامه
+    application = Application.builder().token(TOKEN).build()
+    
+    # راه‌اندازی تایمر برای ارسال رتبه‌های برتر هر روز ساعت ۰۰:۰۰ به وقت ایران
+    application.job_queue.run_daily(
+        send_daily_top_ranks,
+        time=time(hour=0, minute=0, second=0, tzinfo=IRAN_TZ),  # ساعت ۰۰:۰۰
+        days=(0, 1, 2, 3, 4, 5, 6),  # همه روزهای هفته
+        name="daily_top_ranks"
+    )
+    
+    # ثبت هندلرهای دستورات
+    print("\n📝 ثبت هندلرهای دستورات...")
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("active", active_command))
+    application.add_handler(CommandHandler("deactive", deactive_command))
+    application.add_handler(CommandHandler("addfile", addfile_command))
+    application.add_handler(CommandHandler("skip", skip_command))
+    application.add_handler(CommandHandler("updateuser", updateuser_command))
+    application.add_handler(CommandHandler("userinfo", userinfo_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("sendtop", sendtop_command))
+    print("   ✓ دستورات اصلی ثبت شد")
+    
+    # دستورات دیباگ (فقط ادمین‌ها می‌توانند استفاده کنند)
+    print("\n🔍 ثبت دستورات دیباگ...")
+    application.add_handler(CommandHandler("sessions", debug_sessions_command))
+    application.add_handler(CommandHandler("debugfiles", debug_files_command))
+    application.add_handler(CommandHandler("checkdb", check_database_command))
+    application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
+    print("   ✓ دستورات دیباگ ثبت شد")
+    
+    # هندلرهای پیام متنی و فایل
+    print("\n📨 ثبت هندلرهای پیام و فایل...")
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    print("   ✓ هندلرهای متن و فایل ثبت شد")
+    
+    # هندلر کال‌بک (دکمه‌های اینلاین)
+    print("\n🔘 ثبت هندلر کال‌بک...")
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    print("   ✓ هندلر کال‌بک ثبت شد")
+    
+    # نمایش اطلاعات نهایی قبل از شروع
+    print("\n" + "=" * 70)
+    print("🤖 ربات Focus Todo آماده اجراست!")
+    print("=" * 70)
+    print(f"👨‍💼 ادمین‌ها: {ADMIN_IDS}")
+    print(f"⏰ حداکثر زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
+    print(f"🗄️  دیتابیس: {DB_CONFIG['database']} @ {DB_CONFIG['host']}:{DB_CONFIG['port']}")
+    print(f"🌍 منطقه زمانی: ایران ({IRAN_TZ})")
+    print(f"🔑 توکن: {TOKEN[:10]}...{TOKEN[-10:]}")
+    print("=" * 70)
+    print("🔄 شروع Polling...")
+    print("📱 ربات اکنون در حال گوش دادن به پیام‌هاست")
+    print("⚠️  برای توقف: Ctrl + C فشار دهید")
+    print("=" * 70 + "\n")
+    
+    logger.info("🚀 ربات شروع به کار کرد - Polling فعال شد")
+    
+    # شروع polling
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        poll_interval=2.0,
+        timeout=30
+    )
+    
+    print("\nℹ️  Polling متوقف شد. ربات خاموش شد.")
+
+
+if __name__ == "__main__":
     try:
-        # ایجاد برنامه
-        application = Application.builder().token(TOKEN).build()
-        
-        # راه‌اندازی تایمر برای ارسال رتبه‌های برتر ساعت 24:00
-        application.job_queue.run_daily(
-            send_daily_top_ranks,
-            time=time(hour=0, minute=0, second=0, tzinfo=IRAN_TZ),  # ساعت 24:00
-            days=(0, 1, 2, 3, 4, 5, 6),  # همه روزهای هفته
-            name="daily_top_ranks"
-        )
-        
-        # ثبت هندلرهای دستورات
-        print("\n📝 ثبت هندلرهای دستورات...")
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("admin", admin_command))
-        application.add_handler(CommandHandler("active", active_command))
-        application.add_handler(CommandHandler("deactive", deactive_command))
-        application.add_handler(CommandHandler("addfile", addfile_command))
-        application.add_handler(CommandHandler("skip", skip_command))
-        application.add_handler(CommandHandler("updateuser", updateuser_command))
-        application.add_handler(CommandHandler("userinfo", userinfo_command))
-        application.add_handler(CommandHandler("broadcast", broadcast_command))
-        application.add_handler(CommandHandler("sendtop", sendtop_command))
-        print("   ✓ 9 دستور اصلی ثبت شد")
-        
-        # دستورات دیباگ
-        print("\n🔍 ثبت دستورات دیباگ...")
-        application.add_handler(CommandHandler("sessions", debug_sessions_command))
-        application.add_handler(CommandHandler("debugfiles", debug_files_command))
-        application.add_handler(CommandHandler("checkdb", check_database_command))
-        application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
-        print("   ✓ 4 دستور دیباگ ثبت شد")
-        
-        # هندلرهای پیام
-        print("\n📨 ثبت هندلرهای پیام و فایل...")
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-        application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-        print("   ✓ هندلرهای متن و فایل ثبت شد")
-        
-        # هندلر کال‌بک
-        print("\n🔘 ثبت هندلر کال‌بک...")
-        application.add_handler(CallbackQueryHandler(handle_callback))
-        print("   ✓ هندلر کال‌بک ثبت شد")
-        
-        # نمایش اطلاعات نهایی
-        print("\n" + "=" * 70)
-        print("🤖 ربات Focus Todo آماده اجراست!")
-        print("=" * 70)
-        print(f"👨‍💼 ادمین‌ها: {ADMIN_IDS}")
-        print(f"⏰ حداکثر زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
-        print(f"🗄️  دیتابیس: {DB_CONFIG['database']} @ {DB_CONFIG['host']}:{DB_CONFIG['port']}")
-        print(f"🌍 منطقه زمانی: ایران ({IRAN_TZ})")
-        print(f"🔑 توکن: {TOKEN[:10]}...{TOKEN[-10:]}")
-        print("=" * 70)
-        print("🔄 شروع Polling...")
-        print("📱 ربات اکنون در حال گوش دادن به پیام‌هاست")
-        print("⚠️  برای توقف: Ctrl + C فشار دهید")
-        print("=" * 70 + "\n")
-        
-        logger.info("🚀 ربات شروع به کار کرد - Polling فعال شد")
-        
-        # شروع polling
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            poll_interval=2.0,
-            timeout=30
-        )
-        
-        print("\nℹ️  Polling متوقف شد. ربات خاموش شد.")
-        
+        main()
     except KeyboardInterrupt:
         print("\n\n⏹️  ربات توسط کاربر متوقف شد (Ctrl+C)")
         logger.info("ربات توسط کاربر متوقف شد")
@@ -3278,7 +3281,3 @@ def main() -> None:
         print(f"   {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
-        raise
-
-if __name__ == "__main__":
-    main()

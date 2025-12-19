@@ -2386,7 +2386,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif callback_data.startswith("delete_file_"):
         file_id = int(callback_data.replace("delete_file_", ""))
         await delete_file_process(query, file_id, context)
-async def handle_edit_user(query, context, target_user_id: int, admin_id: int) -> None:
+
 async def handle_edit_user(query, context, target_user_id: int, admin_id: int) -> None:
     """بروزرسانی اطلاعات کاربر"""
     if not is_admin(admin_id):

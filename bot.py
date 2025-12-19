@@ -2387,6 +2387,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         file_id = int(callback_data.replace("delete_file_", ""))
         await delete_file_process(query, file_id, context)
 async def handle_edit_user(query, context, target_user_id: int, admin_id: int) -> None:
+async def handle_edit_user(query, context, target_user_id: int, admin_id: int) -> None:
     """بروزرسانی اطلاعات کاربر"""
     if not is_admin(admin_id):
         await query.answer("❌ دسترسی denied.", show_alert=True)
@@ -2417,9 +2418,9 @@ async def handle_edit_user(query, context, target_user_id: int, admin_id: int) -
         f"🎓 پایه فعلی: {current_grade}\n"
         f"🧪 رشته فعلی: {current_field}\n\n"
         f"لطفا پایه جدید را وارد کنید:\n"
-        f"(دهم، یازدهم، دوازدهم، فارغ‌التحصیل)",
+        f"(دهم، یازدهم، دوازدهم، فارغ‌التحصیل، دانشجو)",  # اضافه کردن دانشجو
         parse_mode=ParseMode.MARKDOWN
-    )
+        )
 
 async def handle_toggle_active(query, context, target_user_id: int, admin_id: int) -> None:
     """فعال/غیرفعال کردن کاربر"""

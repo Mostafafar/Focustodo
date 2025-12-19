@@ -3192,23 +3192,24 @@ async def auto_complete_study(context) -> None:
 # -----------------------------------------------------------
 # تابع اصلی
 # -----------------------------------------------------------
+# -----------------------------------------------------------
+# تابع اصلی
+# -----------------------------------------------------------
 def main() -> None:
     """تابع اصلی اجرای ربات"""
-    # ایجاد برنامه
-    application = Application.builder().token(TOKEN).build()
-    
-    # راه‌اندازی تایمر برای ارسال رتبه‌های برتر ساعت 24:00
-    application.job_queue.run_daily(
-        send_daily_top_ranks,
-        time=time(hour=0, minute=0, second=0, tzinfo=IRAN_TZ),  # ساعت 24:00
-        days=(0, 1, 2, 3, 4, 5, 6),  # همه روزهای هفته
-        name="daily_top_ranks"
-    )
-    
-    # ثبت هندلرهای دستورات
-    # ... ادامه کد
+    try:
+        # ایجاد برنامه
+        application = Application.builder().token(TOKEN).build()
         
-        # ثبت هندلرها
+        # راه‌اندازی تایمر برای ارسال رتبه‌های برتر ساعت 24:00
+        application.job_queue.run_daily(
+            send_daily_top_ranks,
+            time=time(hour=0, minute=0, second=0, tzinfo=IRAN_TZ),  # ساعت 24:00
+            days=(0, 1, 2, 3, 4, 5, 6),  # همه روزهای هفته
+            name="daily_top_ranks"
+        )
+        
+        # ثبت هندلرهای دستورات
         print("\n📝 ثبت هندلرهای دستورات...")
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(CommandHandler("admin", admin_command))
@@ -3219,9 +3220,8 @@ def main() -> None:
         application.add_handler(CommandHandler("updateuser", updateuser_command))
         application.add_handler(CommandHandler("userinfo", userinfo_command))
         application.add_handler(CommandHandler("broadcast", broadcast_command))
-        # در بخش ثبت هندلرهای دستورات
         application.add_handler(CommandHandler("sendtop", sendtop_command))
-        print("   ✓ 8 دستور اصلی ثبت شد")
+        print("   ✓ 9 دستور اصلی ثبت شد")
         
         # دستورات دیباگ
         print("\n🔍 ثبت دستورات دیباگ...")

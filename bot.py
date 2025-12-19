@@ -2740,12 +2740,17 @@ async def show_subject_files(query, user_id: int, subject: str) -> None:
     
     keyboard = []
     for file in files[:3]:  # حداکثر 3 فایل اول
-        # متن دکمه: نام فایل (کوتاه شده)
-        file_name_no_ext = os.path.splitext(file['file_name'])[0]
-        button_text = f"⬇️ {file_name_no_ext[:15]}"
+        # متن دکمه: مبحث یا نام فایل (کوتاه شده)
+        if file['topic'] and file['topic'].strip():
+            # استفاده از مبحث برای دکمه
+            button_text = f"⬇️ {file['topic'][:20]}"
+        else:
+            # استفاده از نام فایل اگر مبحث نداریم
+            file_name_no_ext = os.path.splitext(file['file_name'])[0]
+            button_text = f"⬇️ {file_name_no_ext[:20]}"
         
-        if len(file_name_no_ext) > 15:
-            button_text = button_text[:15] + "..."
+        if len(button_text) > 23:  # اضافه کردن "⬇️ "
+            button_text = button_text[:20] + "..."
         
         keyboard.append([
             InlineKeyboardButton(
@@ -2799,20 +2804,31 @@ async def download_file(query, file_id: int, user_id: int, context: ContextTypes
         return
     
     try:
+        # ساخت کپشن با اطلاعات کامل
+        caption_parts = []
+        caption_parts.append(f"📄 **{file_data['file_name']}**\n")
+        
+        if file_data['topic'] and file_data['topic'].strip():
+            caption_parts.append(f"🎯 مبحث: {file_data['topic']}\n")
+        
+        caption_parts.append(f"📚 درس: {file_data['subject']}\n")
+        caption_parts.append(f"🎓 پایه: {file_data['grade']}\n")
+        caption_parts.append(f"🧪 رشته: {file_data['field']}\n")
+        
+        if file_data['description'] and file_data['description'].strip():
+            caption_parts.append(f"📝 توضیح: {file_data['description']}\n")
+        
+        caption_parts.append(f"📦 حجم: {file_data['file_size'] // 1024} KB\n")
+        caption_parts.append(f"📅 تاریخ آپلود: {file_data['upload_date']}\n\n")
+        caption_parts.append("✅ با موفقیت دانلود شد!")
+        
+        caption = "".join(caption_parts)
+        
         # ارسال فایل
         await context.bot.send_document(
             chat_id=query.message.chat_id,
             document=file_data["telegram_file_id"],
-            caption=(
-                f"📄 **{file_data['file_name']}**\n\n"
-                f"📚 درس: {file_data['subject']}\n"
-                f"🎯 مبحث: {file_data['topic']}\n"
-                f"🎓 پایه: {file_data['grade']}\n"
-                f"🧪 رشته: {file_data['field']}\n"
-                f"📦 حجم: {file_data['file_size'] // 1024} KB\n"
-                f"📅 تاریخ آپلود: {file_data['upload_date']}\n\n"
-                f"✅ با موفقیت دانلود شد!"
-            ),
+            caption=caption,
             parse_mode=ParseMode.MARKDOWN
         )
         

@@ -2983,6 +2983,7 @@ async def reject_request(query, request_id: int, context: ContextTypes.DEFAULT_T
     context.user_data["rejecting_request"] = request_id
     await query.answer()
 
+
 async def show_admin_manage_files(query) -> None:
     """مدیریت فایل‌ها"""
     files = get_all_files()
@@ -2995,14 +2996,26 @@ async def show_admin_manage_files(query) -> None:
             text += f"📄 **{file['file_name']}**\n"
             text += f"🆔 کد: FD-{file['file_id']}\n"
             text += f"🎓 {file['grade']} | 🧪 {file['field']}\n"
-            text += f"📚 {file['subject']} - {file['topic'][:30]}\n"
+            text += f"📚 {file['subject']}"
+            
+            # نمایش مبحث اگر موجود باشد
+            if 'topic' in file and file['topic'] and file['topic'].strip():
+                text += f" - {file['topic'][:30]}\n"
+            else:
+                text += "\n"
+                
             text += f"📥 {file['download_count']} دانلود | 📅 {file['upload_date']}\n\n"
     
     keyboard = []
     for file in files[:3]:
+        # متن دکمه حذف با نام فایل
+        button_text = f"🗑 حذف {file['file_name'][:15]}..."
+        if len(file['file_name']) > 15:
+            button_text = button_text[:18] + "..."
+        
         keyboard.append([
             InlineKeyboardButton(
-                f"🗑 حذف {file['file_name'][:15]}...",
+                button_text,
                 callback_data=f"delete_file_{file['file_id']}"
             )
         ])
@@ -3016,7 +3029,7 @@ async def show_admin_manage_files(query) -> None:
         text,
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN
-    )
+)
 
 async def delete_file_process(query, file_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     """حذف فایل"""

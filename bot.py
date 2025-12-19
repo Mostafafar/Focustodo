@@ -5,7 +5,7 @@ import html
 import time
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time  # تغییر این خط
 from typing import Dict, List, Optional, Tuple, Any
 import pytz
 import psycopg2
@@ -3185,6 +3185,9 @@ async def auto_complete_study(context) -> None:
 # -----------------------------------------------------------
 # تابع اصلی
 # -----------------------------------------------------------
+# -----------------------------------------------------------
+# تابع اصلی
+# -----------------------------------------------------------
 def main() -> None:
     """تابع اصلی اجرای ربات"""
     # ایجاد برنامه
@@ -3193,7 +3196,7 @@ def main() -> None:
     # راه‌اندازی تایمر برای ارسال رتبه‌های برتر ساعت 24:00
     application.job_queue.run_daily(
         send_daily_top_ranks,
-        time=time(hour=0, minute=0, second=0, tzinfo=IRAN_TZ),  # ساعت 24:00
+        time=dt_time(hour=0, minute=0, second=0, tzinfo=IRAN_TZ),  # ساعت 24:00
         days=(0, 1, 2, 3, 4, 5, 6),  # همه روزهای هفته
         name="daily_top_ranks"
     )

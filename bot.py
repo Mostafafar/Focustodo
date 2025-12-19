@@ -1562,6 +1562,7 @@ async def deactive_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text("❌ آیدی باید عددی باشد.")
 
 
+
 async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """افزودن فایل توسط ادمین"""
     user_id = update.effective_user.id
@@ -1570,12 +1571,12 @@ async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("❌ دسترسی denied.")
         return
     
-    if len(context.args) < 3:  # تغییر از ۴ به ۳
+    if len(context.args) < 4:  # تغییر از ۳ به ۴ (اضافه کردن مبحث)
         await update.message.reply_text(
             "⚠️ فرمت صحیح:\n"
-            "/addfile <پایه> <رشته> <درس>\n\n"  # حذف <مبحث>
+            "/addfile <پایه> <رشته> <درس> <مبحث>\n\n"  # اضافه کردن مبحث
             "مثال:\n"
-            "/addfile دوازدهم تجربی فیزیک\n\n"  # حذف مبحث
+            "/addfile دوازدهم تجربی فیزیک دینامیک\n\n"  # اضافه کردن مبحث
             "📝 توضیح اختیاری را در خط بعدی بنویسید."
         )
         return
@@ -1583,13 +1584,13 @@ async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     grade = context.args[0]
     field = context.args[1]
     subject = context.args[2]
-    topic = ""  # خالی کردن مبحث
+    topic = context.args[3]  # اضافه کردن مبحث
     
     context.user_data["awaiting_file"] = {
         "grade": grade,
         "field": field,
         "subject": subject,
-        "topic": topic,  # مبحث خالی
+        "topic": topic,  # ذخیره مبحث
         "description": "",
         "uploader_id": user_id
     }
@@ -1598,11 +1599,11 @@ async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"📤 آماده آپلود فایل:\n\n"
         f"🎓 پایه: {grade}\n"
         f"🧪 رشته: {field}\n"
-        f"📚 درس: {subject}\n"  # حذف خط مبحث
+        f"📚 درس: {subject}\n"
+        f"🎯 مبحث: {topic}\n\n"  # نمایش مبحث
         f"📝 لطفا توضیحی برای فایل وارد کنید (اختیاری):\n"
         f"یا برای رد شدن از این مرحله /skip بزنید."
     )
-
 async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """رد شدن از مرحله"""
     user_id = update.effective_user.id

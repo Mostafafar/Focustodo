@@ -1862,6 +1862,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info(f"📝 دریافت پیام متنی از کاربر {user_id}: '{text}'")
     logger.info(f"🔍 وضعیت user_data: {context.user_data}")
     
+    # پردازش دکمه‌های منوی اصلی
+    if text == "🏆 رتبه‌بندی":
+        await show_rankings_text(update, context, user_id)
+        return
+        
+    elif text == "📚 منابع":
+        await show_files_menu_text(update, context, user_id)
+        return
+        
+    elif text == "➕ ثبت مطالعه":
+        await start_study_process_text(update, context)
+        return
+        
+    elif text == "🏠 منوی اصلی":
+        await show_main_menu_text(update, context)
+        return
+        
+    elif text == "🔙 بازگشت":
+        await show_main_menu_text(update, context)
+        return
+    
+    # ادامه کد موجود...
+    # بقیه پردازش‌های ثبت‌نام و ...
     # 1. ثبت‌نام کاربر جدید (مرحله 1: انتخاب پایه)
     if context.user_data.get("registration_step") == "grade":
         valid_grades = ["دهم", "یازدهم", "دوازدهم", "فارغ‌التحصیل", "دانشجو"]

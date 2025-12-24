@@ -1334,24 +1334,22 @@ def delete_file(file_id: int) -> bool:
 # کیبوردهای اینلاین
 # -----------------------------------------------------------
 
-def get_main_menu() -> InlineKeyboardMarkup:
-    """منوی اصلی"""
+def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
+    """منوی اصلی به صورت کیبورد معمولی"""
     keyboard = [
-        [
-            InlineKeyboardButton("🏆 رتبه‌بندی", callback_data="rankings"),
-            InlineKeyboardButton("📚 منابع", callback_data="files"),
-            InlineKeyboardButton("➕ ثبت مطالعه", callback_data="start_study")
-        ]
+        ["🏆 رتبه‌بندی", "📚 منابع"],
+        ["➕ ثبت مطالعه", "🏠 منوی اصلی"]
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-def get_subjects_keyboard() -> InlineKeyboardMarkup:
-    """کیبورد انتخاب درس"""
+
+def get_subjects_keyboard_reply() -> ReplyKeyboardMarkup:
+    """کیبورد انتخاب درس به صورت معمولی"""
     keyboard = []
     row = []
     
     for i, subject in enumerate(SUBJECTS):
-        row.append(InlineKeyboardButton(subject, callback_data=f"subject_{subject}"))
+        row.append(subject)
         if len(row) == 2:
             keyboard.append(row)
             row = []
@@ -1359,34 +1357,31 @@ def get_subjects_keyboard() -> InlineKeyboardMarkup:
     if row:
         keyboard.append(row)
     
-    keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")])
+    keyboard.append(["🔙 بازگشت"])
     
-    return InlineKeyboardMarkup(keyboard)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
-def get_time_selection_keyboard() -> InlineKeyboardMarkup:
-    """کیبورد انتخاب زمان"""
+
+def get_time_selection_keyboard_reply() -> ReplyKeyboardMarkup:
+    """کیبورد انتخاب زمان به صورت معمولی"""
     keyboard = []
     
     for text, minutes in SUGGESTED_TIMES:
-        keyboard.append([InlineKeyboardButton(text, callback_data=f"time_{minutes}")])
+        keyboard.append([text])
     
-    keyboard.append([
-        InlineKeyboardButton("✏️ زمان دلخواه", callback_data="custom_time"),
-        InlineKeyboardButton("🔙 بازگشت", callback_data="choose_subject")
-    ])
+    keyboard.append(["✏️ زمان دلخواه", "🔙 بازگشت"])
     
-    return InlineKeyboardMarkup(keyboard)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
-def get_admin_keyboard() -> InlineKeyboardMarkup:
-    """منوی ادمین"""
+
+def get_admin_keyboard_reply() -> ReplyKeyboardMarkup:
+    """منوی ادمین به صورت کیبورد معمولی"""
     keyboard = [
-        [InlineKeyboardButton("📤 آپلود فایل", callback_data="admin_upload")],
-        [InlineKeyboardButton("👥 درخواست‌ها", callback_data="admin_requests")],
-        [InlineKeyboardButton("📁 مدیریت فایل‌ها", callback_data="admin_manage_files")],
-        [InlineKeyboardButton("📊 آمار ربات", callback_data="admin_stats")],
-        [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")]
+        ["📤 آپلود فایل", "👥 درخواست‌ها"],
+        ["📁 مدیریت فایل‌ها", "📊 آمار ربات"],
+        ["🏠 منوی اصلی"]
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def get_file_subjects_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """کیبورد انتخاب درس برای منابع"""
@@ -1453,6 +1448,7 @@ def get_request_action_keyboard(request_id: int) -> InlineKeyboardMarkup:
 # هندلرهای دستورات
 # -----------------------------------------------------------
 
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور /start"""
     user = update.effective_user
@@ -1470,7 +1466,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context.user_data["registration_step"] = "grade"
         
         await update.message.reply_text(
-            "👋 به ربات Focus Todo خوش آمدید!\n\n"
+            "👋 به ربات کمپ خوش آمدید!\n\n"
             "📝 برای استفاده از ربات، ابتدا باید ثبت‌نام کنید.\n\n"
             "🎓 **لطفا پایه تحصیلی خود را انتخاب کنید:**",
             reply_markup=get_grade_keyboard()
@@ -1494,7 +1490,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "⏰ تایمر هوشمند | 🏆 رتبه‌بندی آنلاین\n"
         "📖 منابع شخصی‌سازی شده\n\n"
         "لطفا یک گزینه انتخاب کنید:",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu_keyboard()  # تغییر به کیبورد معمولی
     )
 
 

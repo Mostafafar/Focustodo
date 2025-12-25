@@ -1865,14 +1865,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     # پردازش انتخاب درس
     # پردازش انتخاب درس
+# 1. ابتدا بررسی حالت دانلود (مهم!)
+    if context.user_data.get("downloading_file") and text.startswith("دانلود"):
+        try:
+            file_id = int(text.split(" ")[1])
+            await download_file_text(update, context, user_id, file_id)
+        except:
+            await update.message.reply_text("❌ فرمت نامعتبر.")
+        return
+
+# 2. سپس بررسی انتخاب درس
     if text in SUBJECTS:
     # بررسی اینکه آیا کاربر در حال مشاهده منابع است؟
         if context.user_data.get("viewing_files"):
-        # کاربر در حال انتخاب درس برای دیدن منابع است
             await show_subject_files_text(update, context, user_id, text)
             return
         else:
-        # کاربر در حال انتخاب درس برای ثبت مطالعه است
             await select_subject_text(update, context, text)
             return
     # پردازش انتخاب زمان

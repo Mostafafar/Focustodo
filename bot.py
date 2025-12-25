@@ -2026,39 +2026,88 @@ async def show_rankings_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
         for i, rank in enumerate(rankings[:3]):
             if i < 3:
                 medal = medals[i]
+                
+                # تبدیل دقیقه به ساعت و دقیقه
                 hours = rank["total_minutes"] // 60
                 mins = rank["total_minutes"] % 60
-                time_display = f"{hours}س {mins}د" if hours > 0 else f"{mins}د"
                 
-                username = rank["username"] or "کاربر"
-                if username == "None":
-                    username = "کاربر"
+                # فرمت زمان: 2h 30m
+                if hours > 0 and mins > 0:
+                    time_display = f"{hours}h {mins}m"
+                elif hours > 0:
+                    time_display = f"{hours}h"
+                else:
+                    time_display = f"{mins}m"
+                
+                # دریافت نام کامل کاربر از تلگرام
+                try:
+                    # تلاش برای دریافت اطلاعات کاربر
+                    chat_member = await context.bot.get_chat(rank["user_id"])
+                    # استفاده از first_name یا username
+                    if chat_member.first_name:
+                        user_display = chat_member.first_name
+                        if chat_member.last_name:
+                            user_display += f" {chat_member.last_name}"
+                    elif chat_member.username:
+                        user_display = f"@{chat_member.username}"
+                    else:
+                        user_display = rank["username"] or "کاربر"
+                except Exception:
+                    # اگر خطا خورد، از username دیتابیس استفاده کن
+                    user_display = rank["username"] or "کاربر"
+                
+                # اگر None بود
+                if user_display == "None" or not user_display:
+                    user_display = "کاربر"
                 
                 grade_field = f"({rank['grade']} {rank['field']})"
                 
                 if rank["user_id"] == user_id:
-                    text += f"{medal} {username} {grade_field}: {time_display} ← شما\n"
+                    text += f"{medal} {user_display} {grade_field}: {time_display} ← **شما**\n"
                 else:
-                    text += f"{medal} {username} {grade_field}: {time_display}\n"
+                    text += f"{medal} {user_display} {grade_field}: {time_display}\n"
         
         user_rank, user_minutes = get_user_rank_today(user_id)
         
         if user_rank:
+            # تبدیل دقیقه به ساعت و دقیقه برای کاربر
             hours = user_minutes // 60
             mins = user_minutes % 60
-            user_time_display = f"{hours}س {mins}د" if hours > 0 else f"{mins}د"
+            
+            if hours > 0 and mins > 0:
+                user_time_display = f"{hours}h {mins}m"
+            elif hours > 0:
+                user_time_display = f"{hours}h"
+            else:
+                user_time_display = f"{mins}m"
             
             if user_rank > 3 and user_minutes > 0:
+                # دریافت نام کاربر جاری
+                try:
+                    chat_member = await context.bot.get_chat(user_id)
+                    if chat_member.first_name:
+                        current_user_display = chat_member.first_name
+                        if chat_member.last_name:
+                            current_user_display += f" {chat_member.last_name}"
+                    elif chat_member.username:
+                        current_user_display = f"@{chat_member.username}"
+                    else:
+                        user_info = get_user_info(user_id)
+                        current_user_display = user_info["username"] if user_info else "شما"
+                except Exception:
+                    user_info = get_user_info(user_id)
+                    current_user_display = user_info["username"] if user_info else "شما"
+                
+                if current_user_display == "None" or not current_user_display:
+                    current_user_display = "شما"
+                    
                 user_info = get_user_info(user_id)
-                username = user_info["username"] if user_info else "شما"
-                if username == "None" or not username:
-                    username = "شما"
                 grade = user_info["grade"] if user_info else ""
                 field = user_info["field"] if user_info else ""
                 grade_field = f"({grade} {field})" if grade and field else ""
                 
                 text += f"\n📊 موقعیت شما:\n"
-                text += f"🏅 رتبه {user_rank}: {username} {grade_field}: {user_time_display}\n"
+                text += f"🏅 رتبه {user_rank}: {current_user_display} {grade_field}: {user_time_display}\n"
             
             elif user_rank <= 3:
                 text += f"\n🎉 آفرین! شما در بین ۳ نفر برتر هستید!\n"
@@ -2069,7 +2118,8 @@ async def show_rankings_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     await update.message.reply_text(
         text,
-        reply_markup=get_main_menu_keyboard()
+        reply_markup=get_main_menu_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
     )
 
 async def start_study_process_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

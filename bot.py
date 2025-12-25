@@ -2238,7 +2238,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # 9. اگر پیام متنی دیگر بود
     await update.message.reply_text(
         "لطفا از منوی ربات استفاده کنید.",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu_keyboard()
     )
             
 

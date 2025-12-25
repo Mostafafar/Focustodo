@@ -1495,6 +1495,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور /admin (فقط برای ادمین‌ها)"""
     user_id = update.effective_user.id
     
@@ -1506,7 +1507,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(
         "👨‍💼 پنل مدیریت\n"
         "لطفا یک عملیات انتخاب کنید:",
-        reply_markup=get_admin_keyboard()
+        reply_markup=get_admin_keyboard_reply()
     )
 
 async def active_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

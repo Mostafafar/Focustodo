@@ -2325,103 +2325,20 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # هندلرهای کال‌بک
 # -----------------------------------------------------------
 
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پردازش کلیک روی دکمه‌های اینلاین"""
+    """پردازش کلیک روی دکمه‌های اینلاین - فقط اتمام مطالعه"""
     query = update.callback_query
     await query.answer()
     
     user_id = update.effective_user.id
-    callback_data = query.data
     
-    # 🔥 اضافه کردن این بخش برای هندلرهای جدید
-    if callback_data.startswith("edituser_"):
-        # بروزرسانی اطلاعات کاربر
-        target_user_id = int(callback_data.replace("edituser_", ""))
-        await handle_edit_user(query, context, target_user_id, user_id)
-        return
-    
-    elif callback_data.startswith("toggleactive_"):
-        # فعال/غیرفعال کردن کاربر
-        target_user_id = int(callback_data.replace("toggleactive_", ""))
-        await handle_toggle_active(query, context, target_user_id, user_id)
-        return
-    
-    # منوی اصلی
-    elif callback_data == "main_menu":
-        await show_main_menu(query)
-    # ... ادامه کد موجود
-    
-    # شروع مطالعه
-    elif callback_data == "start_study":
-        await start_study_process(query, context)
-    
-    # انتخاب درس
-    elif callback_data == "choose_subject":
-        await choose_subject(query)
-    
-    elif callback_data.startswith("subject_"):
-        subject = callback_data.replace("subject_", "")
-        await select_subject(query, context, subject)
-    
-    # انتخاب زمان
-    elif callback_data.startswith("time_"):
-        minutes = int(callback_data.replace("time_", ""))
-        await select_time(query, context, minutes)
-    
-    elif callback_data == "custom_time":
-        await request_custom_time(query, context)
-    
-    # اتمام مطالعه
-    elif callback_data == "complete_study":
+    # فقط اتمام مطالعه
+    if query.data == "complete_study":
         await complete_study_process(query, context, user_id)
-    
-    # رتبه‌بندی
-    elif callback_data == "rankings":
-        await show_rankings(query, user_id)
-    
-    # منابع و فایل‌ها
-    elif callback_data == "files":
-        await show_files_menu(query, user_id)
-    
-    elif callback_data.startswith("filesub_"):
-        subject = callback_data.replace("filesub_", "")
-        await show_subject_files(query, user_id, subject)
-    
-    elif callback_data.startswith("download_"):
-        file_id = int(callback_data.replace("download_", ""))
-        await download_file(query, file_id, user_id, context)
-    
-    # پنل ادمین
-    elif callback_data == "admin_panel":
-        await show_admin_panel(query)
-    
-    elif callback_data == "admin_upload":
-        await show_admin_upload(query)
-    
-    elif callback_data == "admin_requests":
-        await show_admin_requests(query)
-    
-    elif callback_data == "admin_manage_files":
-        await show_admin_manage_files(query)
-    
-    elif callback_data == "admin_stats":
-        await show_admin_stats(query)
-    
-    elif callback_data.startswith("view_request_"):
-        request_id = int(callback_data.replace("view_request_", ""))
-        await show_request_details(query, request_id)
-    
-    elif callback_data.startswith("approve_"):
-        request_id = int(callback_data.replace("approve_", ""))
-        await approve_request(query, request_id, user_id, context)
-    
-    elif callback_data.startswith("reject_"):
-        request_id = int(callback_data.replace("reject_", ""))
-        await reject_request(query, request_id, context)
-    
-    elif callback_data.startswith("delete_file_"):
-        file_id = int(callback_data.replace("delete_file_", ""))
-        await delete_file_process(query, file_id, context)
+    else:
+        # سایر کال‌بک‌ها را نادیده بگیر
+        pass
 
 async def handle_edit_user(query, context, target_user_id: int, admin_id: int) -> None:
     """بروزرسانی اطلاعات کاربر"""

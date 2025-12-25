@@ -1876,14 +1876,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await start_study_process_text(update, context)
         return
         
-    elif text == "🏠 منوی اصلی":
-        await show_main_menu_text(update, context)
-        return
-        
-    elif text == "🔙 بازگشت":
+    elif text == "🏠 منوی اصلی" or text == "🔙 بازگشت":
         await show_main_menu_text(update, context)
         return
     
+    # پردازش انتخاب درس
+    if text in SUBJECTS:
+        await select_subject_text(update, context, text)
+        return
+    
+    # پردازش انتخاب زمان
+    for display_text, minutes in SUGGESTED_TIMES:
+        if text == display_text:
+            await select_time_text(update, context, minutes)
+            return
+    
+    if text == "✏️ زمان دلخواه":
+        await request_custom_time_text(update, context)
+        return
+    
+    # اگر پیام متنی دیگر بود، با منوی اصلی پاسخ بده
+    await update.message.reply_text(
+        "لطفا از منوی ربات استفاده کنید.",
+        reply_markup=get_main_menu_keyboard()  # تغییر از get_main_menu() به get_main_menu_keyboard()
+    )
     # ادامه کد موجود...
     # بقیه پردازش‌های ثبت‌نام و ...
     # 1. ثبت‌نام کاربر جدید (مرحله 1: انتخاب پایه)

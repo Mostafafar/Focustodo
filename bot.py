@@ -2191,7 +2191,11 @@ async def download_file_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
         increment_download_count(file_id)
         
         context.user_data.pop("downloading_file", None)
-        await update.message.reply_text("✅ فایل ارسال شد!", reply_markup=get_after_study_keyboard())
+        context.user_data.pop("viewing_files", None)  # پاک کردن حالت منابع
+        await update.message.reply_text(
+            "✅ فایل ارسال شد!",
+            reply_markup=get_main_menu_keyboard()  # بازگشت به منوی اصلی
+        )
         
     except Exception as e:
         logger.error(f"خطا در ارسال فایل: {e}")

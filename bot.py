@@ -1790,6 +1790,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
         
     elif text == "🏠 منوی اصلی" or text == "🔙 بازگشت":
+    # پاک کردن حالت مشاهده منابع
+        context.user_data.pop("viewing_files", None)
+        context.user_data.pop("downloading_file", None)
+        context.user_data.pop("last_subject", None)
         await show_main_menu_text(update, context)
         return
     
@@ -1860,10 +1864,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     
     # پردازش انتخاب درس
+    # پردازش انتخاب درس
     if text in SUBJECTS:
-        await select_subject_text(update, context, text)
-        return
-    
+    # بررسی اینکه آیا کاربر در حال مشاهده منابع است؟
+        if context.user_data.get("viewing_files"):
+        # کاربر در حال انتخاب درس برای دیدن منابع است
+            await show_subject_files_text(update, context, user_id, text)
+            return
+        else:
+        # کاربر در حال انتخاب درس برای ثبت مطالعه است
+            await select_subject_text(update, context, text)
+            return
     # پردازش انتخاب زمان
     for display_text, minutes in SUGGESTED_TIMES:
         if text == display_text:

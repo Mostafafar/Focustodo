@@ -2067,6 +2067,8 @@ async def show_subject_files_text(update: Update, context: ContextTypes.DEFAULT_
     """نمایش فایل‌های یک درس خاص"""
     files = get_files_by_subject(user_id, subject)
     context.user_data["last_subject"] = subject
+    # در تابع show_subject_files_text، بعد از نمایش فایل‌ها:
+    context.user_data["viewing_files"] = True  # اگر قبلاً نیست
     
     if not files:
         await update.message.reply_text(

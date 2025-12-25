@@ -1789,12 +1789,54 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await start_study_process_text(update, context)
         return
         
-    elif text == "🏠 منوی اصلی" or text == "🔙 بازگشت":
-    # پاک کردن تمام حالت‌های مربوط به منابع
-        context.user_data.pop("viewing_files", None)
-        context.user_data.pop("downloading_file", None)
-        context.user_data.pop("last_subject", None)
+    elif text == "🏠 منوی اصلی":
+        # حذف کیبورد قدیمی
+        await update.message.reply_text(
+            "🔄 درحال بارگذاری...",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await asyncio.sleep(0.1)
+        # پاک کردن تمام حالت‌ها
+        for key in ["viewing_files", "downloading_file", "last_subject", 
+                   "admin_mode", "showing_requests", "managing_files", "showing_stats",
+                   "awaiting_file_id_to_delete", "awaiting_request_id", "rejecting_all",
+                   "awaiting_custom_subject", "awaiting_topic", "awaiting_custom_time",
+                   "awaiting_file_description", "rejecting_request", "awaiting_user_grade",
+                   "awaiting_user_field", "selected_subject", "selected_time"]:
+            context.user_data.pop(key, None)
         await show_main_menu_text(update, context)
+        return
+    
+    elif text == "🔙 بازگشت":
+        # حذف کیبورد قدیمی
+        await update.message.reply_text(
+            "↩️ درحال بازگشت...",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await asyncio.sleep(0.1)
+        
+        # تشخیص به کجا باید برگردد
+        if context.user_data.get("admin_mode"):
+            # اگر در حالت ادمین هستیم، به منوی ادمین برگرد
+            context.user_data.pop("showing_requests", None)
+            context.user_data.pop("managing_files", None)
+            context.user_data.pop("showing_stats", None)
+            context.user_data.pop("awaiting_file_id_to_delete", None)
+            context.user_data.pop("awaiting_request_id", None)
+            context.user_data.pop("rejecting_all", None)
+            await update.message.reply_text(
+                "👨‍💼 پنل مدیریت\nلطفا یک عملیات انتخاب کنید:",
+                reply_markup=get_admin_keyboard_reply()
+            )
+        elif context.user_data.get("viewing_files") or context.user_data.get("downloading_file"):
+            # اگر در حالت منابع هستیم، به منوی منابع برگرد
+            context.user_data.pop("downloading_file", None)
+            context.user_data.pop("last_subject", None)
+            await show_files_menu_text(update, context, user_id)
+        else:
+            # در غیر این صورت به منوی اصلی برگرد
+            context.user_data.clear()
+            await show_main_menu_text(update, context)
         return
     
     # ادمین منو
@@ -1966,6 +2008,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         "لطفا از منوی ربات استفاده کنید.",
         reply_markup=get_main_menu_keyboard()
+    )
+async def switch_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                     message: str, reply_markup: ReplyKeyboardMarkup) -> None:
+    """تغییر منو با انیمیشن و حذف کیبورد قدیمی"""
+    # ارسال انیمیشن تایپ
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, 
+        action="typing"
+    )
+    
+    # حذف کیبورد قدیمی (اگر پیام از کاربر است)
+    if update.message:
+        try:
+            await update.message.reply_text(
+                "🔄",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        except:
+            pass
+    
+    await asyncio.sleep(0.15)  # تأخیر بسیار کوتاه
+    
+    # نمایش منوی جدید
+    await update.message.reply_text(
+        message,
+        reply_markup=reply_markup
     )
 
 # -----------------------------------------------------------

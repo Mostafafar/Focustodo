@@ -2490,23 +2490,20 @@ async def handle_toggle_active(query, context, target_user_id: int, admin_id: in
             )
         else:
             await query.answer("❌ خطا در فعال‌سازی.", show_alert=True)
-async def show_main_menu(query) -> None:
-    """نمایش منوی اصلی"""
-    await query.edit_message_text(
+async def show_main_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش منوی اصلی به صورت متن"""
+    await update.message.reply_text(
         "🎯 به Focus Todo خوش آمدید!\n\n"
         "📚 سیستم مدیریت مطالعه و رقابت سالم\n"
         "⏰ تایمر هوشمند | 🏆 رتبه‌بندی آنلاین\n"
         "📖 منابع شخصی‌سازی شده\n\n"
         "لطفا یک گزینه انتخاب کنید:",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu_keyboard()
     )
 
-async def start_study_process(query, context) -> None:
-    """شروع فرآیند ثبت مطالعه"""
-    await query.edit_message_text(
-        "📚 لطفا درس مورد نظر را انتخاب کنید:",
-        reply_markup=get_subjects_keyboard()
-    )
+
+
+
 
 async def choose_subject(query) -> None:
     """انتخاب درس"""
@@ -2622,20 +2619,19 @@ async def complete_study_process(query, context, user_id: int) -> None:
     context.user_data.pop("current_session", None)
 
 
-async def show_rankings(query, user_id: int) -> None:
-    """نمایش رتبه‌بندی"""
+async def show_rankings_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+    """نمایش رتبه‌بندی به صورت متن"""
     rankings = get_today_rankings()
     date_str, time_str = get_iran_time()
     
     if not rankings:
         text = f"🏆 جدول برترین‌ها\n\n📅 {date_str}\n🕒 {time_str}\n\n📭 هنوز کسی مطالعه نکرده است!"
     else:
-        text = f"🏆 <b>جدول برترین‌های امروز</b>\n\n"
+        text = f"🏆 جدول برترین‌های امروز\n\n"
         text += f"📅 {date_str}\n🕒 {time_str}\n\n"
         
         medals = ["🥇", "🥈", "🥉"]
         
-        # نمایش فقط 3 نفر اول
         for i, rank in enumerate(rankings[:3]):
             if i < 3:
                 medal = medals[i]
@@ -2643,18 +2639,16 @@ async def show_rankings(query, user_id: int) -> None:
                 mins = rank["total_minutes"] % 60
                 time_display = f"{hours}س {mins}د" if hours > 0 else f"{mins}د"
                 
-                # استفاده از نام کاربری به جای آیدی
                 username = rank["username"] or "کاربر"
                 if username == "None":
                     username = "کاربر"
                 
                 grade_field = f"({rank['grade']} {rank['field']})"
                 
-                # اگر کاربر خودش در رتبه‌های اول باشد، مشخص کنیم
                 if rank["user_id"] == user_id:
-                    text += f"{medal} <b>{html.escape(username)}</b> {grade_field}: {time_display} ← <b>شما</b>\n"
+                    text += f"{medal} {username} {grade_field}: {time_display} ← شما\n"
                 else:
-                    text += f"{medal} <b>{html.escape(username)}</b> {grade_field}: {time_display}\n"
+                    text += f"{medal} {username} {grade_field}: {time_display}\n"
         
         # بررسی موقعیت کاربر فعلی
         user_rank, user_minutes = get_user_rank_today(user_id)
@@ -2664,9 +2658,7 @@ async def show_rankings(query, user_id: int) -> None:
             mins = user_minutes % 60
             user_time_display = f"{hours}س {mins}د" if hours > 0 else f"{mins}د"
             
-            # اگر کاربر در رتبه‌های 1-3 نیست، موقعیت او را نمایش بده
             if user_rank > 3 and user_minutes > 0:
-                # دریافت اطلاعات کاربر برای نمایش نام
                 user_info = get_user_info(user_id)
                 username = user_info["username"] if user_info else "شما"
                 if username == "None" or not username:
@@ -2675,48 +2667,61 @@ async def show_rankings(query, user_id: int) -> None:
                 field = user_info["field"] if user_info else ""
                 grade_field = f"({grade} {field})" if grade and field else ""
                 
-                text += f"\n📊 <b>موقعیت شما:</b>\n"
-                text += f"🏅 رتبه {user_rank}: <b>{html.escape(username)}</b> {grade_field}: {user_time_display}\n"
+                text += f"\n📊 موقعیت شما:\n"
+                text += f"🏅 رتبه {user_rank}: {username} {grade_field}: {user_time_display}\n"
             
             elif user_rank <= 3:
-                text += f"\n🎉 <b>آفرین! شما در بین ۳ نفر برتر هستید!</b>\n"
+                text += f"\n🎉 آفرین! شما در بین ۳ نفر برتر هستید!\n"
             else:
                 text += f"\n📊 شروع کنید تا در جدول قرار بگیرید!\n"
         
-        # نمایش تعداد کل شرکت‌کنندگان
-        text += f"\n👥 تعداد کل شرکت‌کنندگان امروز: <b>{len(rankings)} نفر</b>"
+        text += f"\n👥 تعداد کل شرکت‌کنندگان امروز: {len(rankings)} نفر"
     
-    await query.edit_message_text(
+    await update.message.reply_text(
         text,
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔄 به‌روزرسانی", callback_data="rankings"),
-            InlineKeyboardButton("➕ ثبت مطالعه", callback_data="start_study")
-        ], [
-            InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")
-        ]]),
-        parse_mode=ParseMode.HTML,  # تغییر از MARKDOWN به HTML
-        disable_web_page_preview=True
+        reply_markup=get_main_menu_keyboard()
                 )
-async def show_files_menu(query, user_id: int) -> None:
+async def start_study_process_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """شروع فرآیند ثبت مطالعه"""
+    await update.message.reply_text(
+        "📚 لطفا درس مورد نظر را انتخاب کنید:",
+        reply_markup=get_subjects_keyboard_reply()
+    )
+
+
+async def show_files_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """نمایش منوی منابع"""
     user_files = get_user_files(user_id)
     
     if not user_files:
-        await query.edit_message_text(
+        await update.message.reply_text(
             "📭 فایلی برای شما موجود نیست.\n"
             "ادمین به زودی فایل‌های مرتبط را اضافه می‌کند.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")
-            ]])
+            reply_markup=get_main_menu_keyboard()
         )
         return
     
-    await query.edit_message_text(
+    # ایجاد کیبورد برای دروس موجود
+    subjects = list(set([f["subject"] for f in user_files]))
+    keyboard = []
+    row = []
+    
+    for subject in subjects[:6]:  # حداکثر 6 درس
+        row.append(subject)
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    
+    if row:
+        keyboard.append(row)
+    
+    keyboard.append(["🔙 بازگشت"])
+    
+    await update.message.reply_text(
         "📚 منابع آموزشی شما\n\n"
         "لطفا درس مورد نظر را انتخاب کنید:",
-        reply_markup=get_file_subjects_keyboard(user_id)
-    )
-
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        )
 async def show_subject_files(query, user_id: int, subject: str) -> None:
     """نمایش فایل‌های یک درس خاص"""
     files = get_files_by_subject(user_id, subject)

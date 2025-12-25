@@ -2075,14 +2075,14 @@ async def show_subject_files_text(update: Update, context: ContextTypes.DEFAULT_
     """نمایش فایل‌های یک درس خاص"""
     files = get_files_by_subject(user_id, subject)
     context.user_data["last_subject"] = subject
-    # در تابع show_subject_files_text، بعد از نمایش فایل‌ها:
-    context.user_data["viewing_files"] = True  # اگر قبلاً نیست
+    context.user_data["viewing_files"] = True
     
     if not files:
         await update.message.reply_text(
             f"📭 فایلی برای درس {subject} موجود نیست.",
             reply_markup=get_main_menu_keyboard()
         )
+        context.user_data.pop("viewing_files", None)
         return
     
     text = f"📚 منابع {subject}\n\n"
@@ -2090,12 +2090,18 @@ async def show_subject_files_text(update: Update, context: ContextTypes.DEFAULT_
     keyboard = []
     
     for i, file in enumerate(files[:5], 1):
+        # تعیین عنوان برای دکمه
         if file['topic'] and file['topic'].strip():
-            title = file['topic']
+            # اگر مبحث وجود دارد، از آن استفاده کن
+            display_title = file['topic']
         else:
-            title = os.path.splitext(file['file_name'])[0]
+            # اگر مبحث نداریم، نام فایل بدون پسوند را نمایش بده
+            display_title = os.path.splitext(file['file_name'])[0]
         
-        text += f"{i}. **{title}**\n"
+        # کوتاه کردن عنوان برای نمایش در لیست
+        list_title = display_title[:50] + "..." if len(display_title) > 50 else display_title
+        
+        text += f"{i}. **{list_title}**\n"
         text += f"   📄 {file['file_name']}\n"
         
         if file['description'] and file['description'].strip():
@@ -2109,7 +2115,10 @@ async def show_subject_files_text(update: Update, context: ContextTypes.DEFAULT_
         text += f"   📦 {size_mb:.1f} MB | 📥 {file['download_count']} بار\n\n"
         
         if i <= 3:
-            keyboard.append([f"دانلود {file['file_id']} - {file['file_name'][:15]}..."])
+            # ایجاد دکمه با مبحث یا عنوان مناسب
+            # کوتاه کردن عنوان برای دکمه (حداکثر 30 کاراکتر)
+            button_title = display_title[:30] + "..." if len(display_title) > 30 else display_title
+            keyboard.append([f"دانلود {file['file_id']} - {button_title}"])
     
     if len(files) > 5:
         text += f"📊 و {len(files)-5} فایل دیگر...\n"
@@ -2123,7 +2132,6 @@ async def show_subject_files_text(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True),
         parse_mode=ParseMode.MARKDOWN
     )
-
 async def download_file_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, file_id: int) -> None:
     """ارسال فایل به کاربر"""
     file_data = get_file_by_id(file_id)

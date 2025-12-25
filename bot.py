@@ -1790,7 +1790,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
         
     elif text == "🏠 منوی اصلی" or text == "🔙 بازگشت":
-    # پاک کردن حالت مشاهده منابع
+    # پاک کردن تمام حالت‌های مربوط به منابع
         context.user_data.pop("viewing_files", None)
         context.user_data.pop("downloading_file", None)
         context.user_data.pop("last_subject", None)

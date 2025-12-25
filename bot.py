@@ -1494,7 +1494,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور /admin (فقط برای ادمین‌ها)"""
     user_id = update.effective_user.id

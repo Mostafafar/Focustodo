@@ -2529,11 +2529,10 @@ async def choose_subject(query) -> None:
         reply_markup=get_subjects_keyboard()
     )
 
-async def select_subject(query, context, subject: str) -> None:
+async def select_subject_text(update: Update, context: ContextTypes.DEFAULT_TYPE, subject: str) -> None:
     """ذخیره درس انتخاب شده و نمایش انتخاب زمان"""
     if subject == "سایر":
-        # درخواست نام درس از کاربر
-        await query.edit_message_text(
+        await update.message.reply_text(
             "📝 لطفا نام درس را وارد کنید:\n"
             "(مثال: هندسه، علوم کامپیوتر، منطق و ...)"
         )
@@ -2542,38 +2541,41 @@ async def select_subject(query, context, subject: str) -> None:
     
     context.user_data["selected_subject"] = subject
     
-    await query.edit_message_text(
+    await update.message.reply_text(
         f"⏰ تنظیم تایمر\n\n"
         f"📝 درس انتخاب شده: **{subject}**\n\n"
         f"⏱ لطفا مدت زمان مطالعه را انتخاب کنید:\n"
         f"(حداکثر {MAX_STUDY_TIME//60} ساعت)",
-        reply_markup=get_time_selection_keyboard(),
+        reply_markup=get_time_selection_keyboard_reply(),
         parse_mode=ParseMode.MARKDOWN
     )
-async def select_time(query, context, minutes: int) -> None:
+
+
+async def select_time_text(update: Update, context: ContextTypes.DEFAULT_TYPE, minutes: int) -> None:
     """ذخیره زمان انتخاب شده و درخواست مبحث"""
     context.user_data["selected_time"] = minutes
     context.user_data["awaiting_topic"] = True
     
     subject = context.user_data.get("selected_subject", "نامشخص")
     
-    await query.edit_message_text(
+    await update.message.reply_text(
         f"⏱ زمان انتخاب شده: {format_time(minutes)}\n\n"
         f"📚 درس: {subject}\n\n"
         f"✏️ لطفا مبحث مطالعه را وارد کنید:\n"
         f"(مثال: حل مسائل فصل ۳)"
     )
 
-async def request_custom_time(query, context) -> None:
+
+async def request_custom_time_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """درخواست زمان دلخواه"""
     context.user_data["awaiting_custom_time"] = True
     
-    await query.edit_message_text(
+    await update.message.reply_text(
         f"✏️ زمان دلخواه\n\n"
         f"⏱ لطفا زمان را به دقیقه وارد کنید:\n"
         f"(بین {MIN_STUDY_TIME} تا {MAX_STUDY_TIME} دقیقه)\n\n"
         f"مثال: ۹۰ (برای ۱ ساعت و ۳۰ دقیقه)"
-    )
+)
 
 async def complete_study_process(query, context, user_id: int) -> None:
     """اتمام جلسه مطالعه"""

@@ -649,8 +649,15 @@ def get_pending_coupon_requests() -> List[Dict]:
 
 def approve_coupon_request(request_id: int, admin_note: str = "") -> bool:
     """تأیید درخواست کوپن"""
+    conn = None
+    cursor = None
+    
     try:
         logger.info(f"🔍 شروع تأیید درخواست کوپن #{request_id}")
+        
+        # استفاده مستقیم از connection برای کنترل بهتر
+        conn = db.get_connection()
+        cursor = conn.cursor()
         
         # دریافت اطلاعات درخواست
         query = """
@@ -659,7 +666,8 @@ def approve_coupon_request(request_id: int, admin_note: str = "") -> bool:
         WHERE request_id = %s
         """
         
-        request = db.execute_query(query, (request_id,), fetch=True)
+        cursor.execute(query, (request_id,))
+        request = cursor.fetchone()
         
         if not request:
             logger.error(f"❌ درخواست #{request_id} یافت نشد")
@@ -668,73 +676,68 @@ def approve_coupon_request(request_id: int, admin_note: str = "") -> bool:
         user_id, request_type, amount, receipt_image, current_status = request
         logger.info(f"🔍 درخواست #{request_id} یافت شد: کاربر={user_id}, نوع={request_type}, وضعیت={current_status}")
         
-        # بررسی وضعیت درخواست - حذف شرط pending برای امنیت بیشتر
-        if current_status not in ['pending', 'approved']:
+        # بررسی وضعیت درخواست
+        if current_status not in ['pending']:
             logger.error(f"❌ درخواست #{request_id} در وضعیت '{current_status}' است و قابل تأیید نیست")
             return False
-        
-        # اگر قبلاً تأیید شده، فقط پیام برگردان
-        if current_status == 'approved':
-            logger.info(f"⚠️ درخواست #{request_id} قبلاً تأیید شده")
-            return True
         
         # ایجاد کوپن برای کاربر
         if request_type == "purchase":
             logger.info(f"🔍 ایجاد کوپن برای کاربر {user_id}")
-            coupon = create_coupon(user_id, "purchased", receipt_image)
             
-            if not coupon:
+            # ایجاد کوپن با connection یکسان
+            date_str, time_str = get_iran_time()
+            coupon_code = generate_coupon_code(user_id)
+            
+            logger.info(f"🎫 کد کوپن: {coupon_code}")
+            logger.info(f"🏷️ منبع: purchased")
+            
+            # INSERT کوپن
+            query_coupon = """
+            INSERT INTO coupons (user_id, coupon_code, coupon_source, value, earned_date, 
+                               purchase_receipt, status, verified_by_admin)
+            VALUES (%s, %s, %s, %s, %s, %s, 'active', TRUE)
+            RETURNING coupon_id, coupon_code, earned_date, value
+            """
+            
+            cursor.execute(query_coupon, (user_id, coupon_code, "purchased", 400000, date_str, receipt_image))
+            coupon_result = cursor.fetchone()
+            
+            if not coupon_result:
                 logger.error(f"❌ خطا در ایجاد کوپن برای کاربر {user_id}")
+                conn.rollback()
                 return False
             
-            logger.info(f"✅ کوپن ایجاد شد: {coupon['coupon_code']}")
+            coupon_id, coupon_code, earned_date, value = coupon_result
+            logger.info(f"✅ کوپن ایجاد شد: {coupon_code} (ID: {coupon_id})")
             
             # بروزرسانی وضعیت درخواست
-            query = """
+            query_update = """
             UPDATE coupon_requests
             SET status = 'approved', admin_note = %s
-            WHERE request_id = %s AND status = 'pending'
+            WHERE request_id = %s
             """
-            rows_updated = db.execute_query(query, (admin_note, request_id))
+            cursor.execute(query_update, (admin_note, request_id))
             
-            if rows_updated > 0:
-                logger.info(f"✅ درخواست #{request_id} بروزرسانی شد. {rows_updated} ردیف تأثیر پذیرفت")
+            # commit تمام تغییرات
+            conn.commit()
+            logger.info(f"✅ درخواست #{request_id} و کوپن {coupon_code} تأیید و ذخیره شد")
+            
+            # تأیید نهایی: بررسی کوپن در دیتابیس
+            cursor.execute("SELECT coupon_code, status FROM coupons WHERE coupon_id = %s", (coupon_id,))
+            verify = cursor.fetchone()
+            if verify:
+                logger.info(f"✅ تأیید نهایی: کوپن {verify[0]} با وضعیت {verify[1]} در دیتابیس ذخیره شد")
             else:
-                # اگر ردیفی بروزرسانی نشد، ممکن است وضعیت تغییر کرده باشد
-                logger.warning(f"⚠️ هیچ ردیفی در بروزرسانی درخواست #{request_id} تأثیر نپذیرفت. ممکن است قبلاً تأیید شده باشد.")
-                
-                # بررسی مجدد وضعیت
-                query_check = """
-                SELECT status FROM coupon_requests WHERE request_id = %s
-                """
-                status_check = db.execute_query(query_check, (request_id,), fetch=True)
-                if status_check and status_check[0] == 'approved':
-                    logger.info(f"✅ درخواست #{request_id} قبلاً تأیید شده بود")
-                    return True
-                else:
-                    logger.error(f"❌ خطا در بروزرسانی وضعیت درخواست #{request_id}")
-                    return False
+                logger.error(f"❌ کوپن {coupon_code} در دیتابیس یافت نشد!")
             
-            # ارسال پیام به کاربر
-            try:
-                message = f"""
-✅ **درخواست خرید کوپن شما تأیید شد!**
-
-🎫 کد کوپن: `{coupon['coupon_code']}`
-💰 ارزش: ۴۰,۰۰۰ تومان
-📅 تاریخ: {coupon['earned_date']}
-
-💡 این کوپن را می‌توانید برای هر خدمتی استفاده کنید.
-برای استفاده، از منوی 🎫 کوپن استفاده کنید.
-"""
-                # اینجا باید context را داشته باشیم، فعلاً فقط لاگ می‌کنیم
-                logger.info(f"✅ کوپن برای کاربر {user_id} ایجاد شد: {coupon['coupon_code']}")
-                
-                # برای ارسال پیام به کاربر، می‌توانیم از context یا job queue استفاده کنیم
-                # فعلاً فقط لاگ می‌کنیم
-                
-            except Exception as e:
-                logger.error(f"⚠️ خطا در اطلاع به کاربر: {e}")
+            # ایجاد پیام برای کاربر
+            coupon_data = {
+                "coupon_id": coupon_id,
+                "coupon_code": coupon_code,
+                "earned_date": earned_date,
+                "value": value
+            }
             
             return True
         
@@ -743,7 +746,15 @@ def approve_coupon_request(request_id: int, admin_note: str = "") -> bool:
         
     except Exception as e:
         logger.error(f"❌ خطا در تأیید درخواست کوپن: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
         return False
+        
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            db.return_connection(conn)
 
 # -----------------------------------------------------------
 # 3. توابع جدید برای مدیریت تنظیمات

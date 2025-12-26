@@ -2235,6 +2235,7 @@ async def handle_study_coupon_earning(update: Update, context: ContextTypes.DEFA
 # -----------------------------------------------------------
 
 
+
 async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور تغییر شماره کارت ادمین"""
     user_id = update.effective_user.id
@@ -2251,8 +2252,7 @@ async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 📋 <b>اطلاعات کارت:</b>
 • شماره: <code>{current_card['card_number']}</code>
-• صاحب حساب: {current_card['card_owner']}
-
+• صاحب حساب: {escape_html_for_telegram(current_card['card_owner'])}
 📝 <b>برای تغییر، از فرمت زیر استفاده کنید:</b>
 <code>/set_card &lt;شماره_کارت&gt; &lt;نام_صاحب_کارت&gt;</code>
 
@@ -2273,7 +2273,7 @@ async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 🏦 <b>اطلاعات جدید:</b>
 • شماره کارت: <code>{card_number}</code>
-• صاحب حساب: {card_owner}
+• صاحب حساب: {escape_html_for_telegram(card_owner)}
 • تاریخ تغییر: {date_str}
 • زمان: {time_str}
 
@@ -2288,9 +2288,9 @@ async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     await context.bot.send_message(
                         admin_id,
                         f"🏦 <b>شماره کارت تغییر کرد</b>\n\n"
-                        f"توسط: {update.effective_user.full_name}\n"
+                        f"توسط: {escape_html_for_telegram(update.effective_user.full_name or 'نامشخص')}\n"
                         f"شماره جدید: <code>{card_number}</code>\n"
-                        f"صاحب حساب: {card_owner}\n"
+                        f"صاحب حساب: {escape_html_for_telegram(card_owner)}\n"
                         f"زمان: {time_str}",
                         parse_mode=ParseMode.HTML
                     )
@@ -2298,6 +2298,7 @@ async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     logger.error(f"خطا در اطلاع به ادمین {admin_id}: {e}")
     else:
         await update.message.reply_text("❌ خطا در ذخیره اطلاعات کارت.")
+
 
 async def coupon_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """نمایش درخواست‌های کوپن برای ادمین"""

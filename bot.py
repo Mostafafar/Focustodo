@@ -1274,6 +1274,7 @@ async def notify_admin_new_user(context: ContextTypes.DEFAULT_TYPE, user: Any) -
     except Exception as e:
         logger.error(f"خطا در اطلاع‌رسانی به ادمین‌ها: {e}")
 
+
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور /users - نمایش لیست کاربران"""
     user_id = update.effective_user.id
@@ -1286,59 +1287,78 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # دریافت شماره صفحه (اگر وارد شده)
         page = int(context.args[0]) if context.args else 1
         page = max(1, page)
-        limit = 8  # کاهش تعداد برای جلوگیری از خطا
+        limit = 8
         offset = (page - 1) * limit
         
+        # 🔴 تغییر مهم: ORDER BY بر اساس total_study_time به ترتیب نزولی
         query = """
         SELECT user_id, username, grade, field, is_active, 
                registration_date, total_study_time, total_sessions
         FROM users
-        ORDER BY user_id DESC
+        WHERE is_active = TRUE  # فقط کاربران فعال
+        ORDER BY total_study_time DESC NULLS LAST, user_id DESC
         LIMIT %s OFFSET %s
         """
         
         results = db.execute_query(query, (limit, offset), fetchall=True)
         
         if not results:
-            await update.message.reply_text("📭 هیچ کاربری ثبت‌نام نکرده است.")
+            await update.message.reply_text("📭 هیچ کاربر فعالی وجود ندارد.")
             return
         
-        # شمارش کل کاربران
-        count_query = "SELECT COUNT(*) FROM users"
+        # شمارش کل کاربران فعال
+        count_query = "SELECT COUNT(*) FROM users WHERE is_active = TRUE"
         total_users = db.execute_query(count_query, fetch=True)[0]
         total_pages = (total_users + limit - 1) // limit
         
         # ساخت متن با HTML
-        text = "<b>📋 لیست کاربران</b>\n\n"
-        text += f"📊 <b>تعداد کل کاربران:</b> {total_users}\n"
+        text = "<b>📋 رتبه‌بندی کاربران بر اساس مطالعه کلی</b>\n\n"
+        text += f"📊 <b>تعداد کاربران فعال:</b> {total_users}\n"
         text += f"📄 <b>صفحه {page} از {total_pages}</b>\n\n"
         
         for i, row in enumerate(results, 1):
             user_id_db, username, grade, field, is_active, reg_date, total_time, total_sessions = row
             
-            text += f"<b>{offset + i}. 👤 کاربر</b>\n"
+            # نمایش رتبه در صفحه
+            rank_position = offset + i
+            
+            # ایموجی برای رتبه‌های برتر
+            if rank_position == 1:
+                rank_emoji = "🥇"
+            elif rank_position == 2:
+                rank_emoji = "🥈"
+            elif rank_position == 3:
+                rank_emoji = "🥉"
+            else:
+                rank_emoji = f"{rank_position}."
+            
+            text += f"<b>{rank_emoji} 👤 کاربر</b>\n"
             text += f"🆔 <code>{user_id_db}</code>\n"
             text += f"📛 {html.escape(username or 'ندارد')}\n"
             text += f"🎓 {html.escape(grade)} | 🧪 {html.escape(field)}\n"
-            text += f"✅ <b>وضعیت:</b> {'فعال' if is_active else 'غیرفعال'}\n"
-            text += f"📅 <b>ثبت‌نام:</b> {html.escape(reg_date or 'نامشخص')}\n"
             
+            # نمایش زمان مطالعه با فرمت زیبا
             if total_time:
                 hours = total_time // 60
                 mins = total_time % 60
                 if hours > 0 and mins > 0:
-                    time_display = f"{hours}h {mins}m"
+                    time_display = f"<b>{hours}h {mins}m</b>"
                 elif hours > 0:
-                    time_display = f"{hours}h"
+                    time_display = f"<b>{hours}h</b>"
                 else:
-                    time_display = f"{mins}m"
-                text += f"⏰ <b>مطالعه:</b> {time_display} ({total_sessions} جلسه)\n"
+                    time_display = f"<b>{mins}m</b>"
+                text += f"⏰ <b>کل مطالعه:</b> {time_display}\n"
+                text += f"📖 <b>جلسات:</b> {total_sessions}\n"
+            else:
+                text += f"⏰ <b>کل مطالعه:</b> ۰ دقیقه\n"
+                text += f"📖 <b>جلسات:</b> ۰\n"
             
+            text += f"📅 <b>ثبت‌نام:</b> {html.escape(reg_date or 'نامشخص')}\n"
             text += "─" * 15 + "\n"
         
-        # بررسی طول متن (Telegram limit: 4096 characters)
+        # بررسی طول متن
         if len(text) > 4000:
-            text = text[:4000] + "\n\n⚠️ <i>(متن برش خورده - کاربران زیاد هستند)</i>"
+            text = text[:4000] + "\n\n⚠️ <i>(متن برش خورده)</i>"
         
         keyboard = []
         if page > 1:
@@ -1352,7 +1372,7 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(
             text,
             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-            parse_mode=ParseMode.HTML  # 🔴 تغییر به HTML
+            parse_mode=ParseMode.HTML
         )
         
     except Exception as e:

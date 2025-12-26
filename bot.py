@@ -839,28 +839,28 @@ def initialize_default_settings():
 def check_study_streak(user_id: int) -> Optional[Dict]:
     """بررسی استرک مطالعه کاربر برای کسب کوپن"""
     try:
-        date_str, _ = get_iran_time()
         today = datetime.now(IRAN_TZ)
-        yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         today_str = today.strftime("%Y-%m-%d")
+        yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         
-        # بررسی مطالعه دیروز
+        # دریافت آمار مطالعه از daily_rankings (مطمئن‌ترین منبع)
         query_yesterday = """
-        SELECT COALESCE(SUM(total_minutes), 0) 
-        FROM daily_rankings 
+        SELECT total_minutes FROM daily_rankings
         WHERE user_id = %s AND date = %s
         """
-        yesterday_minutes = db.execute_query(query_yesterday, (user_id, yesterday), fetch=True)
-        yesterday_minutes = yesterday_minutes[0] if yesterday_minutes else 0
+        yesterday_result = db.execute_query(query_yesterday, (user_id, yesterday), fetch=True)
+        yesterday_minutes = yesterday_result[0] if yesterday_result else 0
         
-        # بررسی مطالعه امروز
         query_today = """
-        SELECT COALESCE(SUM(total_minutes), 0) 
-        FROM daily_rankings 
+        SELECT total_minutes FROM daily_rankings
         WHERE user_id = %s AND date = %s
         """
-        today_minutes = db.execute_query(query_today, (user_id, today_str), fetch=True)
-        today_minutes = today_minutes[0] if today_minutes else 0
+        today_result = db.execute_query(query_today, (user_id, today_str), fetch=True)
+        today_minutes = today_result[0] if today_result else 0
+        
+        logger.info(f"🔍 بررسی استرک برای کاربر {user_id}:")
+        logger.info(f"  دیروز ({yesterday}): {yesterday_minutes} دقیقه")
+        logger.info(f"  امروز ({today_str}): {today_minutes} دقیقه")
         
         # شرط کسب کوپن: هر روز حداقل ۶ ساعت (۳۶۰ دقیقه)
         if yesterday_minutes >= 360 and today_minutes >= 360:
@@ -881,16 +881,18 @@ def check_study_streak(user_id: int) -> Optional[Dict]:
                 """
                 
                 total_hours = (yesterday_minutes + today_minutes) // 60
-                streak_id = db.execute_query(query_streak, 
+                streak_result = db.execute_query(query_streak, 
                     (user_id, yesterday, today_str, total_hours, 2), fetch=True)
                 
-                if streak_id:
+                if streak_result:
+                    streak_id = streak_result[0]
+                    logger.info(f"✅ استرک واجد شرایط ایجاد شد: ID={streak_id}")
                     return {
                         "eligible": True,
                         "yesterday_minutes": yesterday_minutes,
                         "today_minutes": today_minutes,
                         "total_hours": total_hours,
-                        "streak_id": streak_id[0]
+                        "streak_id": streak_id
                     }
         
         return {
@@ -900,7 +902,7 @@ def check_study_streak(user_id: int) -> Optional[Dict]:
         }
         
     except Exception as e:
-        logger.error(f"خطا در بررسی استرک مطالعه: {e}")
+        logger.error(f"خطا در بررسی استرک مطالعه: {e}", exc_info=True)
         return None
 
 def award_streak_coupon(user_id: int, streak_id: int) -> Optional[Dict]:

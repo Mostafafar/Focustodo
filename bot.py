@@ -2163,11 +2163,12 @@ def delete_file(file_id: int) -> bool:
 # -----------------------------------------------------------
 
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """منوی اصلی - به‌روزرسانی شده"""
+    """منوی اصلی"""
     keyboard = [
-        ["🏆 رتبه‌بندی", "📚 منابع"],
-        ["➕ ثبت مطالعه", "🎫 کوپن"],  # تغییر اینجا
-        ["🏠 منوی اصلی"]
+        ["➕ ثبت مطالعه"],
+        ["📚 منابع"],
+        ["🎫 کوپن"],
+        ["🏆 رتبه‌بندی"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 def get_subjects_keyboard_reply() -> ReplyKeyboardMarkup:

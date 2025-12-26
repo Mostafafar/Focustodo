@@ -310,20 +310,26 @@ db = Database()
 # -----------------------------------------------------------
 # توابع کمکی
 # -----------------------------------------------------------
-def generate_coupon_code() -> str:
+# فقط یک تابع داشته باشید
+def generate_coupon_code(user_id: Optional[int] = None) -> str:
     """تولید کد کوپن یکتا"""
     import random
     import string
+    import time
     
-    timestamp = int(time.time()) % 10000
+    timestamp = int(time.time())
     random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"FT{timestamp:04d}{random_str}"
+    
+    if user_id:
+        return f"FT{user_id:09d}{timestamp % 10000:04d}{random_str}"
+    else:
+        return f"FT{timestamp % 10000:04d}{random_str}"
 
 def create_coupon(user_id: int, source: str, receipt_image: str = None) -> Optional[Dict]:
     """ایجاد کوپن جدید"""
     try:
         date_str, time_str = get_iran_time()
-        coupon_code = generate_coupon_code()
+        coupon_code = generate_coupon_code(user_id)
         
         logger.info(f"🔍 در حال ایجاد کوپن برای کاربر {user_id}")
         logger.info(f"🎫 کد کوپن: {coupon_code}")

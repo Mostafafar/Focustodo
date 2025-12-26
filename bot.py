@@ -1189,6 +1189,7 @@ def get_complete_study_keyboard() -> ReplyKeyboardMarkup:
 # هندلرهای دستورات
 # -----------------------------------------------------------
 
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور /start"""
     user = update.effective_user
@@ -1202,6 +1203,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not result:
         logger.info(f"📝 کاربر جدید {user_id} - شروع فرآیند ثبت‌نام")
         context.user_data["registration_step"] = "grade"
+        
+        # ارسال اطلاع به ادمین‌ها
+        await notify_admin_new_user(context, user)
         
         await update.message.reply_text(
             "👋 به ربات کمپ خوش آمدید!\n\n"
@@ -1228,7 +1232,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "لطفا یک گزینه انتخاب کنید:",
         reply_markup=get_main_menu_keyboard()
     )
-
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور /admin (فقط برای ادمین‌ها)"""
     user_id = update.effective_user.id
@@ -1243,6 +1246,177 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "لطفا یک عملیات انتخاب کنید:",
         reply_markup=get_admin_keyboard_reply()
     )
+async def notify_admin_new_user(context: ContextTypes.DEFAULT_TYPE, user: Any) -> None:
+    """ارسال اطلاع کاربر جدید به ادمین‌ها"""
+    try:
+        date_str, time_str = get_iran_time()
+        
+        message = f"👤 **کاربر جدید /start زده**\n\n"
+        message += f"🆔 آیدی عددی: `{user.id}`\n"
+        message += f"👤 نام: {user.full_name or 'نامشخص'}\n"
+        message += f"📛 نام کاربری: @{user.username or 'ندارد'}\n"
+        message += f"📅 تاریخ: {date_str}\n"
+        message += f"🕒 زمان: {time_str}\n\n"
+        message += f"✅ منتظر ثبت‌نام است."
+        
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    admin_id,
+                    message,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.error(f"خطا در ارسال به ادمین {admin_id}: {e}")
+                
+    except Exception as e:
+        logger.error(f"خطا در اطلاع‌رسانی به ادمین‌ها: {e}")
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور /users - نمایش لیست کاربران"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    try:
+        # دریافت شماره صفحه (اگر وارد شده)
+        page = int(context.args[0]) if context.args else 1
+        page = max(1, page)
+        limit = 10
+        offset = (page - 1) * limit
+        
+        query = """
+        SELECT user_id, username, grade, field, is_active, 
+               registration_date, total_study_time, total_sessions
+        FROM users
+        ORDER BY user_id DESC
+        LIMIT %s OFFSET %s
+        """
+        
+        results = db.execute_query(query, (limit, offset), fetchall=True)
+        
+        if not results:
+            await update.message.reply_text("📭 هیچ کاربری ثبت‌نام نکرده است.")
+            return
+        
+        # شمارش کل کاربران
+        count_query = "SELECT COUNT(*) FROM users"
+        total_users = db.execute_query(count_query, fetch=True)[0]
+        total_pages = (total_users + limit - 1) // limit
+        
+        text = f"📋 **لیست کاربران**\n\n"
+        text += f"📊 تعداد کل کاربران: {total_users}\n"
+        text += f"📄 صفحه {page} از {total_pages}\n\n"
+        
+        for i, row in enumerate(results, 1):
+            user_id_db, username, grade, field, is_active, reg_date, total_time, total_sessions = row
+            
+            text += f"**{offset + i}. 👤 کاربر**\n"
+            text += f"🆔 `{user_id_db}`\n"
+            text += f"📛 @{username or 'ندارد'}\n"
+            text += f"🎓 {grade} | 🧪 {field}\n"
+            text += f"✅ وضعیت: {'فعال' if is_active else 'غیرفعال'}\n"
+            text += f"📅 ثبت‌نام: {reg_date}\n"
+            
+            if total_time:
+                hours = total_time // 60
+                mins = total_time % 60
+                if hours > 0 and mins > 0:
+                    time_display = f"{hours}h {mins}m"
+                elif hours > 0:
+                    time_display = f"{hours}h"
+                else:
+                    time_display = f"{mins}m"
+                text += f"⏰ مطالعه: {time_display} ({total_sessions} جلسه)\n"
+            
+            text += "─" * 20 + "\n"
+        
+        keyboard = []
+        if page > 1:
+            keyboard.append(["◀️ صفحه قبل"])
+        if page < total_pages:
+            keyboard.append(["▶️ صفحه بعد"])
+        keyboard.append(["🔙 بازگشت"])
+        
+        context.user_data["users_page"] = page
+        
+        await update.message.reply_text(
+            text,
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+    except Exception as e:
+        logger.error(f"خطا در نمایش لیست کاربران: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
+async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور /send - ارسال پیام مستقیم به کاربر"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ فرمت صحیح:\n"
+            "/send <آیدی_کاربر> <پیام>\n\n"
+            "مثال:\n"
+            "/send 6680287530 سلام! به ربات خوش آمدید.\n\n"
+            "📌 آیدی کاربر را می‌توانید از لیست کاربران (/users) دریافت کنید."
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        message = " ".join(context.args[1:])
+        
+        # بررسی وجود کاربر
+        query = "SELECT username FROM users WHERE user_id = %s"
+        user_check = db.execute_query(query, (target_user_id,), fetch=True)
+        
+        if not user_check:
+            await update.message.reply_text(f"❌ کاربر با آیدی {target_user_id} یافت نشد.")
+            return
+        
+        username = user_check[0] or "کاربر"
+        
+        # ارسال پیام
+        try:
+            await context.bot.send_message(
+                target_user_id,
+                f"📩 **پیام از مدیریت:**\n\n{message}\n\n👨‍💼 مدیر ربات",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+            # تأیید به ادمین
+            date_str, time_str = get_iran_time()
+            await update.message.reply_text(
+                f"✅ پیام ارسال شد!\n\n"
+                f"👤 گیرنده: {username} (آیدی: `{target_user_id}`)\n"
+                f"📩 پیام: {message[:100]}{'...' if len(message) > 100 else ''}\n"
+                f"📅 تاریخ: {date_str}\n"
+                f"🕒 زمان: {time_str}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+            # لاگ ارسال پیام
+            logger.info(f"پیام از ادمین {user_id} به کاربر {target_user_id}: {message}")
+            
+        except Exception as e:
+            logger.error(f"خطا در ارسال پیام به کاربر {target_user_id}: {e}")
+            await update.message.reply_text(
+                f"❌ خطا در ارسال پیام!\n"
+                f"کاربر ممکن است ربات را بلاک کرده باشد یا دیگر عضو نباشد."
+            )
+            
+    except ValueError:
+        await update.message.reply_text("❌ آیدی کاربر باید عددی باشد.")
+    except Exception as e:
+        logger.error(f"خطا در دستور /send: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
 
 async def active_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """فعال‌سازی کاربر توسط ادمین"""

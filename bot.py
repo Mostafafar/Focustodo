@@ -1100,7 +1100,6 @@ def create_coupon_for_user(user_id: int, study_session_id: int = None) -> Option
         expires_date = (datetime.now(IRAN_TZ) + timedelta(days=7)).strftime("%Y-%m-%d")
         
         coupon_code = generate_coupon_code(user_id)
-        
         query = """
         INSERT INTO reward_coupons (user_id, coupon_code, value, study_session_id, created_date, expires_at)
         VALUES (%s, %s, %s, %s, %s, %s)

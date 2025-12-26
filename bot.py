@@ -2175,14 +2175,19 @@ def get_subjects_keyboard_reply() -> ReplyKeyboardMarkup:
     keyboard = []
     row = []
     
-    for i, subject in enumerate(SUBJECTS):
+    # اضافه کردن 11 درس اول در 3 ردیف
+    for i, subject in enumerate(SUBJECTS[:-1]):  # همه به جز "سایر"
         row.append(subject)
-        if len(row) == 2:
+        if len(row) == 3:  # هر ردیف 3 دکمه
             keyboard.append(row)
             row = []
     
+    # اضافه کردن ردیف آخر اگر درس‌های باقی مانده وجود دارد
     if row:
         keyboard.append(row)
+    
+    # اضافه کردن "سایر" در یک ردیف جداگانه
+    keyboard.append(["سایر"])
     
     keyboard.append(["🔙 بازگشت"])
     

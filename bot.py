@@ -4371,6 +4371,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     elif text == "🛒 خرید کوپن" or text == "💳 خرید کوپن":
         await handle_coupon_purchase(update, context)
         return
+    # مدیریت کوپن کاربر
+    elif text == "🎫 کوپن‌های من":
+        await show_user_coupons(update, context, user_id)
+        return
 
 # و در بخش پردازش عکس فیش:
 

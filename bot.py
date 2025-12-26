@@ -134,55 +134,7 @@ class Database:
             # جداول موجود...
             
             # جدول جدید: کوپن‌ها
-            """
-            CREATE TABLE IF NOT EXISTS coupons (
-                coupon_id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                coupon_code VARCHAR(50) UNIQUE,
-                coupon_source VARCHAR(50),
-                value INTEGER DEFAULT 400000,
-                status VARCHAR(20) DEFAULT 'active',
-                earned_date VARCHAR(50),
-                used_date VARCHAR(50),
-                used_for VARCHAR(50),
-                purchase_receipt TEXT,
-                admin_card_number VARCHAR(50),
-                verified_by_admin BOOLEAN DEFAULT FALSE,
-                notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
             
-            # جدول جدید: استرک‌های مطالعه
-            """
-            CREATE TABLE IF NOT EXISTS user_study_streaks (
-                streak_id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                start_date VARCHAR(50),
-                end_date VARCHAR(50),
-                total_hours INTEGER,
-                days_count INTEGER,
-                earned_coupon BOOLEAN DEFAULT FALSE,
-                coupon_id INTEGER REFERENCES coupons(coupon_id),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            
-            # جدول جدید: درخواست‌های کوپن
-            """
-            CREATE TABLE IF NOT EXISTS coupon_requests (
-                request_id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                request_type VARCHAR(50), -- 'purchase', 'usage'
-                service_type VARCHAR(50), -- 'call', 'analysis', 'correction', 'exam', 'test_analysis'
-                coupon_codes TEXT, -- کدهای کوپن برای استفاده
-                amount INTEGER, -- مبلغ پرداختی
-                status VARCHAR(20) DEFAULT 'pending', -- 'pending', 'approved', 'rejected', 'completed'
-                receipt_image TEXT, -- عکس فیش
-                admin_note TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
             
             # جدول جدید: تنظیمات سیستم
             """
@@ -289,20 +241,57 @@ class Database:
                used_at TIMESTAMP
           )
           """,
-          """
-          CREATE TABLE IF NOT EXISTS user_activities (
-              activity_id SERIAL PRIMARY KEY,
-              user_id BIGINT REFERENCES users(user_id),
-              date VARCHAR(50),
-              total_study_minutes INTEGER DEFAULT 0,
-              sessions_count INTEGER DEFAULT 0,
-              received_encouragement BOOLEAN DEFAULT FALSE,
-              received_midday_report BOOLEAN DEFAULT FALSE,
-              received_night_report BOOLEAN DEFAULT FALSE,
-              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(user_id, date)
-         )
-         """
+
+            # جدول جدید: کوپن‌ها
+            """
+            CREATE TABLE IF NOT EXISTS coupons (
+                coupon_id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                coupon_code VARCHAR(50) UNIQUE,
+                coupon_source VARCHAR(50),
+                value INTEGER DEFAULT 400000,
+                status VARCHAR(20) DEFAULT 'active',
+                earned_date VARCHAR(50),
+                used_date VARCHAR(50),
+                used_for VARCHAR(50),
+                purchase_receipt TEXT,
+                admin_card_number VARCHAR(50),
+                verified_by_admin BOOLEAN DEFAULT FALSE,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            
+            # جدول جدید: استرک‌های مطالعه
+            """
+            CREATE TABLE IF NOT EXISTS user_study_streaks (
+                streak_id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                start_date VARCHAR(50),
+                end_date VARCHAR(50),
+                total_hours INTEGER,
+                days_count INTEGER,
+                earned_coupon BOOLEAN DEFAULT FALSE,
+                coupon_id INTEGER REFERENCES coupons(coupon_id),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            
+            # جدول جدید: درخواست‌های کوپن
+            """
+            CREATE TABLE IF NOT EXISTS coupon_requests (
+                request_id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                request_type VARCHAR(50), -- 'purchase', 'usage'
+                service_type VARCHAR(50), -- 'call', 'analysis', 'correction', 'exam', 'test_analysis'
+                coupon_codes TEXT, -- کدهای کوپن برای استفاده
+                amount INTEGER, -- مبلغ پرداختی
+                status VARCHAR(20) DEFAULT 'pending', -- 'pending', 'approved', 'rejected', 'completed'
+                receipt_image TEXT, -- عکس فیش
+                admin_note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
             
             
         ]

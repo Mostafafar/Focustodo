@@ -1992,7 +1992,575 @@ def get_complete_study_keyboard() -> ReplyKeyboardMarkup:
 # -----------------------------------------------------------
 # هندلرهای دستورات
 # -----------------------------------------------------------
+async def coupon_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """هندلر منوی کوپن"""
+    user_id = update.effective_user.id
+    
+    if not is_user_active(user_id):
+        await update.message.reply_text(
+            "❌ حساب کاربری شما فعال نیست.\n"
+            "لطفا منتظر تأیید ادمین باشید."
+        )
+        return
+    
+    await update.message.reply_text(
+        "🎫 **سیستم کوپن‌ها**\n\n"
+        "هر کوپن معادل ۴۰,۰۰۰ تومان ارزش دارد\n\n"
+        "📋 خدمات قابل خرید با کوپن:",
+        reply_markup=get_coupon_services_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
+# -----------------------------------------------------------
+# 9. هندلر انتخاب خدمت کوپن
+# -----------------------------------------------------------
+
+async def handle_coupon_service_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, service: str) -> None:
+    """پردازش انتخاب خدمت کوپن"""
+    user_id = update.effective_user.id
+    
+    # تعیین قیمت خدمت
+    service_prices = {
+        "📞 تماس تلفنی (۱ کوپن)": {"price": 1, "name": "تماس تلفنی"},
+        "📊 تحلیل گزارش (۱ کوپن)": {"price": 1, "name": "تحلیل گزارش کار"},
+        "✏️ تصحیح آزمون (۱ کوپن)": {"price": 1, "name": "تصحیح آزمون تشریحی"},
+        "📈 تحلیل آزمون (۱ کوپن)": {"price": 1, "name": "تحلیل آزمون"},
+        "📝 آزمون شخصی (۲ کوپن)": {"price": 2, "name": "آزمون شخصی"}
+    }
+    
+    if service == "🔗 برنامه شخصی":
+        await handle_free_program(update, context)
+        return
+    
+    if service not in service_prices:
+        await update.message.reply_text("❌ خدمت انتخاب شده نامعتبر است.")
+        return
+    
+    service_info = service_prices[service]
+    context.user_data["selected_service"] = service_info
+    
+    # بررسی کوپن‌های کاربر
+    active_coupons = get_user_coupons(user_id, "active")
+    
+    if len(active_coupons) >= service_info["price"]:
+        # کاربر کوپن کافی دارد
+        context.user_data["awaiting_coupon_selection"] = True
+        
+        coupon_list = "📋 **کوپن‌های فعال شما:**\n\n"
+        for i, coupon in enumerate(active_coupons[:5], 1):
+            source_emoji = "⏰" if coupon["source"] == "study_streak" else "💳"
+            coupon_list += f"{i}. {source_emoji} `{coupon['coupon_code']}` - {coupon['earned_date']}\n"
+        
+        if len(active_coupons) > 5:
+            coupon_list += f"\n📊 و {len(active_coupons)-5} کوپن دیگر...\n"
+        
+        coupon_list += f"\n🎯 برای {service_info['name']} نیاز به {service_info['price']} کوپن دارید."
+        
+        if service_info["price"] == 1:
+            coupon_list += "\n📝 لطفا کد کوپن مورد نظر را وارد کنید:"
+            await update.message.reply_text(
+                coupon_list,
+                reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            coupon_list += "\n📝 لطفا کدهای کوپن را با کاما جدا کنید (مثال: FT123,FT456):"
+            await update.message.reply_text(
+                coupon_list,
+                reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True),
+                parse_mode=ParseMode.MARKDOWN
+            )
+    else:
+        # کاربر کوپن کافی ندارد
+        context.user_data["awaiting_purchase_method"] = True
+        
+        missing = service_info["price"] - len(active_coupons)
+        
+        text = f"""
+📋 **{service_info['name']}**
+
+💰 قیمت: {service_info['price']} کوپن
+
+📊 **وضعیت کوپن‌های شما:**
+• کوپن‌های فعال: {len(active_coupons)}
+• نیاز به {missing} کوپن دیگر
+
+🛒 **روش‌های دریافت کوپن:**
+"""
+        await update.message.reply_text(
+            text,
+            reply_markup=get_coupon_method_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+# -----------------------------------------------------------
+# 10. هندلر برنامه شخصی رایگان
+# -----------------------------------------------------------
+
+async def handle_free_program(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """پردازش برنامه شخصی رایگان"""
+    text = """
+🔗 **برنامه شخصی رایگان**
+
+📋 شرایط دریافت:
+۱. عضویت در کانل KonkorofKings
+۲. فعال بودن اشتراک
+
+📢 **لینک کانال:**
+https://t.me/konkorofkings
+
+✅ پس از عضویت، دکمه زیر را بزنید:
+"""
+    
+    keyboard = [
+        ["✅ تأیید عضویت"],
+        ["🔙 بازگشت"]
+    ]
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# -----------------------------------------------------------
+# 11. هندلر خرید کوپن
+# -----------------------------------------------------------
+
+async def handle_coupon_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """پردازش خرید کوپن"""
+    user_id = update.effective_user.id
+    
+    # دریافت اطلاعات کارت ادمین
+    card_info = get_admin_card_info()
+    
+    text = f"""
+💳 **خرید کوپن**
+
+💰 مبلغ: ۴۰,۰۰۰ تومان
+
+🏦 **لطفا مبلغ را به شماره کارت زیر واریز کنید:**
+`{card_info['card_number']}`
+به نام: {card_info['card_owner']}
+
+📸 **پس از واریز، عکس فیش پرداختی را ارسال کنید.**
+
+⚠️ توجه:
+• در توضیح پرداخت، آیدی عددی خود را بنویسید: `{user_id}`
+• پس از تأیید ادمین، ۱ کوپن عمومی به حساب شما اضافه می‌شود
+• این کوپن را می‌توانید برای هر خدمتی استفاده کنید
+• کوپن‌ها تاریخ انقضا ندارند
+
+🔙 بازگشت
+"""
+    
+    context.user_data["awaiting_payment_receipt"] = True
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# -----------------------------------------------------------
+# 12. هندلر کسب کوپن از مطالعه
+# -----------------------------------------------------------
+
+async def handle_study_coupon_earning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """پردازش کسب کوپن از طریق مطالعه"""
+    user_id = update.effective_user.id
+    
+    # بررسی استرک کاربر
+    streak_info = check_study_streak(user_id)
+    
+    text = """
+⏰ **کسب کوپن از طریق مطالعه**
+
+📋 شرایط کسب کوپن:
+• ۲ روز متوالی مطالعه
+• هر روز حداقل ۶ ساعت مطالعه
+• جلسات معتبر (حداقل ۳۰ دقیقه)
+
+🎯 **آمار مطالعه ۲ روز اخیر شما:**
+"""
+    
+    if streak_info and streak_info["eligible"]:
+        text += f"""
+✅ دیروز: {streak_info['yesterday_minutes'] // 60} ساعت و {streak_info['yesterday_minutes'] % 60} دقیقه
+✅ امروز: {streak_info['today_minutes'] // 60} ساعت و {streak_info['today_minutes'] % 60} دقیقه
+🎯 مجموع: {streak_info['total_hours']} ساعت در ۲ روز
+
+🎉 **شما واجد شرایط کسب کوپن هستید!**
+
+💰 **آیا می‌خواهید کوپن دریافت کنید؟**
+"""
+        
+        keyboard = [
+            ["✅ دریافت کوپن"],
+            ["🔙 بازگشت"]
+        ]
+        
+        context.user_data["eligible_for_coupon"] = streak_info
+        
+    else:
+        yesterday_hours = streak_info["yesterday_minutes"] // 60 if streak_info else 0
+        yesterday_mins = streak_info["yesterday_minutes"] % 60 if streak_info else 0
+        today_hours = streak_info["today_minutes"] // 60 if streak_info else 0
+        today_mins = streak_info["today_minutes"] % 60 if streak_info else 0
+        
+        text += f"""
+📊 دیروز: {yesterday_hours} ساعت و {yesterday_mins} دقیقه
+📊 امروز: {today_hours} ساعت و {today_mins} دقیقه
+
+⚠️ **برای کسب کوپن نیاز دارید:**
+• هر روز حداقل ۶ ساعت مطالعه کنید
+• این روند را برای ۲ روز متوالی ادامه دهید
+
+💡 **نکته:** سیستم به صورت خودکار بررسی می‌کند و هنگام واجد شرایط بودن، کوپن را اعطا می‌کند.
+"""
+        
+        keyboard = [
+            ["🔄 بررسی مجدد"],
+            ["🔙 بازگشت"]
+        ]
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# -----------------------------------------------------------
+# 13. دستورات ادمین جدید
+# -----------------------------------------------------------
+
+async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور تغییر شماره کارت ادمین"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    if len(context.args) < 2:
+        current_card = get_admin_card_info()
+        
+        text = f"""
+🏦 **شماره کارت فعلی:**
+
+📋 اطلاعات کارت:
+• شماره: `{current_card['card_number']}`
+• صاحب حساب: {current_card['card_owner']}
+
+📝 **برای تغییر، از فرمت زیر استفاده کنید:**
+`/set_card <شماره_کارت> <نام_صاحب_کارت>`
+
+مثال:
+`/set_card ۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸ علی_محمدی`
+"""
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    card_number = context.args[0]
+    card_owner = " ".join(context.args[1:])
+    
+    if set_admin_card_info(card_number, card_owner):
+        date_str, time_str = get_iran_time()
+        
+        text = f"""
+✅ **شماره کارت ذخیره شد!**
+
+🏦 اطلاعات جدید:
+• شماره کارت: `{card_number}`
+• صاحب حساب: {card_owner}
+• تاریخ تغییر: {date_str}
+• زمان: {time_str}
+
+📌 این شماره کارت از این پس برای خرید کوپن نمایش داده می‌شود.
+"""
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        
+        # اطلاع به همه ادمین‌ها
+        for admin_id in ADMIN_IDS:
+            if admin_id != user_id:
+                try:
+                    await context.bot.send_message(
+                        admin_id,
+                        f"🏦 **شماره کارت تغییر کرد**\n\n"
+                        f"توسط: {update.effective_user.full_name}\n"
+                        f"شماره جدید: `{card_number}`\n"
+                        f"صاحب حساب: {card_owner}\n"
+                        f"زمان: {time_str}",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except Exception as e:
+                    logger.error(f"خطا در اطلاع به ادمین {admin_id}: {e}")
+    else:
+        await update.message.reply_text("❌ خطا در ذخیره اطلاعات کارت.")
+
+async def coupon_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش درخواست‌های کوپن برای ادمین"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    requests = get_pending_coupon_requests()
+    
+    if not requests:
+        await update.message.reply_text(
+            "📭 هیچ درخواست کوپنی در انتظار نیست.",
+            reply_markup=get_admin_coupon_keyboard()
+        )
+        return
+    
+    text = f"📋 **درخواست‌های کوپن در انتظار: {len(requests)}**\n\n"
+    
+    for req in requests[:5]:
+        username = req['username'] or "نامشخص"
+        amount = f"{req['amount']:,} تومان" if req['amount'] else "رایگان"
+        request_type = "🛒 خرید" if req['request_type'] == "purchase" else "🎫 استفاده"
+        
+        text += f"**{request_type}** - #{req['request_id']}\n"
+        text += f"👤 {html.escape(username)} (آیدی: `{req['user_id']}`)\n"
+        
+        if req['service_type']:
+            service_names = {
+                'call': '📞 تماس تلفنی',
+                'analysis': '📊 تحلیل گزارش',
+                'correction': '✏️ تصحیح آزمون',
+                'exam': '📝 آزمون شخصی',
+                'test_analysis': '📈 تحلیل آزمون'
+            }
+            service = service_names.get(req['service_type'], req['service_type'])
+            text += f"📋 خدمت: {service}\n"
+        
+        if req['amount']:
+            text += f"💰 مبلغ: {amount}\n"
+        
+        text += f"📅 {req['created_at'].strftime('%Y/%m/%d %H:%M')}\n\n"
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=get_admin_coupon_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def verify_coupon_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """تأیید درخواست کوپن توسط ادمین"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ فرمت صحیح:\n"
+            "/verify_coupon <شناسه_درخواست>\n\n"
+            "مثال:\n"
+            "/verify_coupon 123"
+        )
+        return
+    
+    try:
+        request_id = int(context.args[0])
+        
+        if approve_coupon_request(request_id, f"تأیید شده توسط ادمین {user_id}"):
+            await update.message.reply_text(
+                f"✅ درخواست #{request_id} تأیید شد.\n"
+                f"کوپن برای کاربر ایجاد و ارسال شد."
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ خطا در تأیید درخواست #{request_id}.\n"
+                f"ممکن است قبلاً تأیید شده باشد."
+            )
+            
+    except ValueError:
+        await update.message.reply_text("❌ شناسه باید عددی باشد.")
+    except Exception as e:
+        logger.error(f"خطا در تأیید کوپن: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
+
+async def coupon_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش آمار کوپن‌ها برای ادمین"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    try:
+        # آمار کلی
+        query_total = """
+        SELECT 
+            COUNT(*) as total_coupons,
+            COUNT(CASE WHEN status = 'active' THEN 1 END) as active_coupons,
+            COUNT(CASE WHEN status = 'used' THEN 1 END) as used_coupons,
+            COUNT(CASE WHEN coupon_source = 'study_streak' THEN 1 END) as study_coupons,
+            COUNT(CASE WHEN coupon_source = 'purchased' THEN 1 END) as purchased_coupons,
+            COALESCE(SUM(value), 0) as total_value
+        FROM coupons
+        """
+        total_stats = db.execute_query(query_total, fetch=True)
+        
+        # آمار امروز
+        date_str, _ = get_iran_time()
+        query_today = """
+        SELECT 
+            COUNT(*) as today_coupons,
+            COUNT(CASE WHEN coupon_source = 'study_streak' THEN 1 END) as today_study,
+            COUNT(CASE WHEN coupon_source = 'purchased' THEN 1 END) as today_purchased,
+            COALESCE(SUM(value), 0) as today_value
+        FROM coupons
+        WHERE earned_date = %s
+        """
+        today_stats = db.execute_query(query_today, (date_str,), fetch=True)
+        
+        # درخواست‌های در انتظار
+        query_pending = """
+        SELECT COUNT(*) FROM coupon_requests WHERE status = 'pending'
+        """
+        pending_count = db.execute_query(query_pending, fetch=True)
+        
+        text = f"""
+📊 **آمار کامل سیستم کوپن**
+────────────────────
+📅 تاریخ: {date_str}
+
+📈 **آمار کلی:**
+• کل کوپن‌ها: {total_stats[0]:,}
+• کوپن‌های فعال: {total_stats[1]:,}
+• کوپن‌های استفاده‌شده: {total_stats[2]:,}
+• کسب از مطالعه: {total_stats[3]:,}
+• خریداری شده: {total_stats[4]:,}
+• مجموع ارزش: {total_stats[5]:,} ریال
+
+🎯 **امروز:**
+• کوپن‌های امروز: {today_stats[0] if today_stats else 0}
+• کسب از مطالعه: {today_stats[1] if today_stats else 0}
+• خریداری شده: {today_stats[2] if today_stats else 0}
+• ارزش امروز: {today_stats[3] if today_stats else 0:,} ریال
+
+⏳ **در انتظار:**
+• درخواست‌های بررسی: {pending_count[0] if pending_count else 0}
+
+💎 **میانگین‌ها:**
+• ارزش هر کوپن: ۴۰,۰۰۰ تومان
+• ارزش کل: {total_stats[5] // 10:,} تومان
+"""
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        
+    except Exception as e:
+        logger.error(f"خطا در دریافت آمار کوپن: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
+async def show_user_coupons(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+    """نمایش کوپن‌های کاربر"""
+    active_coupons = get_user_coupons(user_id, "active")
+    used_coupons = get_user_coupons(user_id, "used")
+    all_coupons = get_user_coupons(user_id)
+    
+    total_value = sum(c["value"] for c in all_coupons)
+    
+    text = f"""
+🎫 **کوپن‌های من**
+
+📊 **آمار کلی:**
+• کل کوپن‌ها: {len(all_coupons)}
+• فعال: {len(active_coupons)}
+• استفاده‌شده: {len(used_coupons)}
+• مجموع ارزش: {total_value // 10:,} تومان
+
+"""
+    
+    if active_coupons:
+        text += "✅ **کوپن‌های فعال:**\n\n"
+        for i, coupon in enumerate(active_coupons[:10], 1):
+            source_emoji = "⏰" if coupon["source"] == "study_streak" else "💳"
+            text += f"{i}. {source_emoji} `{coupon['coupon_code']}`\n"
+            text += f"   📅 {coupon['earned_date']} | 🏷️ عمومی\n"
+        
+        if len(active_coupons) > 10:
+            text += f"\n📊 و {len(active_coupons)-10} کوپن دیگر...\n"
+    else:
+        text += "📭 **هیچ کوپن فعالی ندارید.**\n\n"
+    
+    text += "\n💡 هر کوپن را می‌توانید برای هر خدمتی استفاده کنید."
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=get_coupon_management_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def show_user_requests(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+    """نمایش درخواست‌های کاربر"""
+    try:
+        query = """
+        SELECT request_id, request_type, service_type, amount, status, 
+               created_at, admin_note
+        FROM coupon_requests
+        WHERE user_id = %s
+        ORDER BY created_at DESC
+        LIMIT 10
+        """
+        
+        results = db.execute_query(query, (user_id,), fetchall=True)
+        
+        if not results:
+            text = "📭 **هیچ درخواستی ثبت نکرده‌اید.**"
+        else:
+            text = "📋 **درخواست‌های شما**\n\n"
+            
+            for row in results:
+                request_id, request_type, service_type, amount, status, created_at, admin_note = row
+                
+                type_emoji = "🛒" if request_type == "purchase" else "🎫"
+                status_emoji = {
+                    "pending": "⏳",
+                    "approved": "✅",
+                    "rejected": "❌",
+                    "completed": "🎉"
+                }.get(status, "❓")
+                
+                text += f"{type_emoji} **درخواست #{request_id}**\n"
+                text += f"{status_emoji} وضعیت: {status}\n"
+                
+                if service_type:
+                    service_names = {
+                        'call': '📞 تماس تلفنی',
+                        'analysis': '📊 تحلیل گزارش',
+                        'correction': '✏️ تصحیح آزمون',
+                        'exam': '📝 آزمون شخصی',
+                        'test_analysis': '📈 تحلیل آزمون'
+                    }
+                    service = service_names.get(service_type, service_type)
+                    text += f"📋 خدمت: {service}\n"
+                
+                if amount:
+                    text += f"💰 مبلغ: {amount:,} تومان\n"
+                
+                text += f"📅 تاریخ: {created_at.strftime('%Y/%m/%d %H:%M')}\n"
+                
+                if admin_note:
+                    text += f"📝 پیام ادمین: {admin_note}\n"
+                
+                text += "─" * 15 + "\n"
+        
+        await update.message.reply_text(
+            text,
+            reply_markup=get_coupon_management_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+    except Exception as e:
+        logger.error(f"خطا در نمایش درخواست‌های کاربر: {e}")
+        await update.message.reply_text(
+            "❌ خطا در دریافت درخواست‌ها.",
+            reply_markup=get_coupon_management_keyboard()
+                )
 
 async def send_midday_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     """ارسال گزارش نیم‌روز ساعت 15:00"""
@@ -4715,6 +5283,13 @@ def main() -> None:
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         print("   ✓ هندلرهای متن و فایل ثبت شد")
+         
+        print("\n🎫 ثبت دستورات سیستم کوپن...")
+        application.add_handler(CommandHandler("set_card", set_card_command))
+        application.add_handler(CommandHandler("coupon_requests", coupon_requests_command))
+        application.add_handler(CommandHandler("verify_coupon", verify_coupon_command))
+        application.add_handler(CommandHandler("coupon_stats", coupon_stats_command))
+        print("   ✓ 4 دستور جدید کوپن ثبت شد")
         
         print("\n" + "=" * 70)
         print("🤖 ربات Focus Todo آماده اجراست!")

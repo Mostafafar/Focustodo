@@ -447,26 +447,81 @@ def create_coupon_request(user_id: int, request_type: str, service_type: str = N
                          amount: int = None, receipt_image: str = None) -> Optional[Dict]:
     """ایجاد درخواست جدید کوپن"""
     try:
+        logger.info(f"🔍 ایجاد درخواست کوپن برای کاربر {user_id}")
+        logger.info(f"📋 نوع: {request_type}, خدمت: {service_type}, مبلغ: {amount}")
+        
         query = """
         INSERT INTO coupon_requests (user_id, request_type, service_type, amount, receipt_image, status)
         VALUES (%s, %s, %s, %s, %s, 'pending')
         RETURNING request_id, created_at
         """
         
+        logger.info(f"🔍 اجرای کوئری INSERT...")
         result = db.execute_query(query, (user_id, request_type, service_type, amount, receipt_image), fetch=True)
         
         if result:
+            request_id, created_at = result
+            logger.info(f"✅ درخواست کوپن ایجاد شد: #{request_id} در {created_at}")
             return {
-                "request_id": result[0],
-                "created_at": result[1]
+                "request_id": request_id,
+                "created_at": created_at
             }
-        
-        return None
+        else:
+            logger.error("❌ هیچ نتیجه‌ای از INSERT برگشت داده نشد")
+            return None
         
     except Exception as e:
-        logger.error(f"خطا در ایجاد درخواست کوپن: {e}")
+        logger.error(f"❌ خطا در ایجاد درخواست کوپن: {e}", exc_info=True)
         return None
 
+async def debug_all_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش همه درخواست‌های کوپن"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    try:
+        query = """
+        SELECT request_id, user_id, request_type, service_type, 
+               amount, status, created_at, admin_note
+        FROM coupon_requests
+        ORDER BY request_id DESC
+        LIMIT 20
+        """
+        
+        results = db.execute_query(query, fetchall=True)
+        
+        if not results:
+            await update.message.reply_text("📭 هیچ درخواست کوپنی وجود ندارد.")
+            return
+        
+        text = "📋 **همه درخواست‌های کوپن**\n\n"
+        
+        for row in results:
+            request_id, user_id_db, request_type, service_type, amount, status, created_at, admin_note = row
+            
+            text += f"🆔 **#{request_id}**\n"
+            text += f"👤 کاربر: {user_id_db}\n"
+            text += f"📋 نوع: {request_type}\n"
+            text += f"💰 مبلغ: {amount or 0:,} تومان\n"
+            text += f"✅ وضعیت: {status}\n"
+            text += f"📅 تاریخ: {created_at.strftime('%Y/%m/%d %H:%M') if isinstance(created_at, datetime) else created_at}\n"
+            
+            if admin_note:
+                text += f"📝 یادداشت: {admin_note[:50]}...\n" if len(admin_note) > 50 else f"📝 یادداشت: {admin_note}\n"
+            
+            text += "─" * 20 + "\n"
+        
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+    except Exception as e:
+        logger.error(f"خطا در نمایش همه درخواست‌ها: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
 def get_pending_coupon_requests() -> List[Dict]:
     """دریافت درخواست‌های کوپن در انتظار"""
     try:
@@ -5581,6 +5636,7 @@ def main() -> None:
         
         application.add_handler(MessageHandler(filters.PHOTO, handle_payment_photo))
         print("   ✓ هندلرهای متن، فایل و عکس ثبت شد")
+        application.add_handler(CommandHandler("debug_all_requests", debug_all_requests_command))
         
         print("\n" + "=" * 70)
         print("🤖 ربات Focus Todo آماده اجراست!")

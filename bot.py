@@ -3078,7 +3078,8 @@ async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.info("📭 هیچ کاربر فعالی وجود ندارد")
             return
         
-        date_str, time_str = get_iran_time()
+        date_str = datetime.now(IRAN_TZ).strftime("%Y/%m/%d")
+        time_str = "23:00"
         total_sent = 0
         
         for row in results:
@@ -3089,16 +3090,27 @@ async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
                 continue
             
             try:
-                # دریافت جلسات امروز
-                today_sessions = get_today_sessions(user_id)
+                # دریافت جلسات امروز از جدول study_sessions
+                query_sessions = """
+                SELECT COALESCE(SUM(minutes), 0) as total_minutes,
+                       COUNT(*) as session_count
+                FROM study_sessions
+                WHERE user_id = %s AND date = %s AND completed = TRUE
+                """
+                today_result = db.execute_query(query_sessions, (user_id, date_str), fetch=True)
                 
-                # دریافت آمار امروز از daily_rankings
+                if today_result:
+                    total_today, session_count = today_result
+                else:
+                    total_today, session_count = 0, 0
+                
+                # دریافت آمار امروز از daily_rankings (برای مطابقت)
                 query_today = """
                 SELECT total_minutes FROM daily_rankings
                 WHERE user_id = %s AND date = %s
                 """
                 today_stats = db.execute_query(query_today, (user_id, date_str), fetch=True)
-                today_minutes = today_stats[0] if today_stats else 0
+                today_minutes = today_stats[0] if today_stats else total_today
                 
                 # دریافت آمار دیروز
                 yesterday = (datetime.now(IRAN_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -3117,31 +3129,40 @@ async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
                 text += f"📅 <b>تاریخ:</b> {date_str}\n"
                 text += f"🕒 <b>زمان:</b> {time_str}\n\n"
                 
-                if today_sessions:
+                if today_minutes > 0:
+                    # دریافت جلسات با جزئیات
+                    query_sessions_detail = """
+                    SELECT subject, topic, minutes
+                    FROM study_sessions
+                    WHERE user_id = %s AND date = %s AND completed = TRUE
+                    ORDER BY start_time
+                    """
+                    sessions_detail = db.execute_query(query_sessions_detail, (user_id, date_str), fetchall=True)
+                    
                     text += f"✅ <b>خلاصه فعالیت‌های امروز:</b>\n"
                     
-                    total_today = 0
+                    total_today_detail = 0
                     subjects = {}
                     
-                    for session in today_sessions:
-                        total_today += session["minutes"]
-                        subject = session["subject"]
+                    for session in sessions_detail:
+                        subject, topic, minutes = session
+                        total_today_detail += minutes
                         if subject in subjects:
-                            subjects[subject] += session["minutes"]
+                            subjects[subject] += minutes
                         else:
-                            subjects[subject] = session["minutes"]
+                            subjects[subject] = minutes
                     
                     # نمایش دروس
                     for subject, minutes in subjects.items():
                         text += f"• {subject}: {minutes} دقیقه\n"
                     
                     text += f"\n📊 <b>آمار کامل امروز:</b>\n"
-                    text += f"⏰ مجموع مطالعه: {total_today} دقیقه\n"
-                    text += f"📖 تعداد جلسات: {len(today_sessions)}\n"
+                    text += f"⏰ مجموع مطالعه: {today_minutes} دقیقه\n"
+                    text += f"📖 تعداد جلسات: {session_count}\n"
                     
                     # مقایسه با دیروز
                     if yesterday_minutes > 0:
-                        difference = total_today - yesterday_minutes
+                        difference = today_minutes - yesterday_minutes
                         if difference > 0:
                             text += f"📈 نسبت به دیروز: +{difference} دقیقه بهبود 🎉\n"
                         elif difference < 0:

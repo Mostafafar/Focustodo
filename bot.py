@@ -2789,13 +2789,35 @@ async def coupon_stats_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"❌ خطا: {e}")
 async def show_user_coupons(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """نمایش کوپن‌های کاربر"""
-    active_coupons = get_user_coupons(user_id, "active")
-    used_coupons = get_user_coupons(user_id, "used")
-    all_coupons = get_user_coupons(user_id)
+    logger.info(f"🔍 نمایش کوپن‌های کاربر {user_id}")
     
-    total_value = sum(c["value"] for c in all_coupons)
-    
-    text = f"""
+    try:
+        # دریافت همه کوپن‌های کاربر
+        all_coupons = get_user_coupons(user_id)  # بدون فیلتر وضعیت
+        
+        if not all_coupons:
+            logger.info(f"📭 کاربر {user_id} هیچ کوپنی ندارد")
+            await update.message.reply_text(
+                "📭 **شما هیچ کوپنی ندارید.**\n\n"
+                "🛒 برای خرید کوپن از گزینه «🛒 خرید کوپن» استفاده کنید.\n"
+                "⏰ یا با مطالعه مستمر می‌توانید کوپن کسب کنید.",
+                reply_markup=get_coupon_management_keyboard()
+            )
+            return
+        
+        # جدا کردن کوپن‌های فعال و استفاده‌شده
+        active_coupons = [c for c in all_coupons if c["status"] == "active"]
+        used_coupons = [c for c in all_coupons if c["status"] == "used"]
+        
+        logger.info(f"📊 آمار کوپن‌ها برای کاربر {user_id}:")
+        logger.info(f"  • کل: {len(all_coupons)}")
+        logger.info(f"  • فعال: {len(active_coupons)}")
+        logger.info(f"  • استفاده‌شده: {len(used_coupons)}")
+        
+        # محاسبه مجموع ارزش
+        total_value = sum(c["value"] for c in all_coupons)
+        
+        text = f"""
 🎫 **کوپن‌های من**
 
 📊 **آمار کلی:**
@@ -2805,26 +2827,46 @@ async def show_user_coupons(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 • مجموع ارزش: {total_value // 10:,} تومان
 
 """
-    
-    if active_coupons:
-        text += "✅ **کوپن‌های فعال:**\n\n"
-        for i, coupon in enumerate(active_coupons[:10], 1):
-            source_emoji = "⏰" if coupon["source"] == "study_streak" else "💳"
-            text += f"{i}. {source_emoji} `{coupon['coupon_code']}`\n"
-            text += f"   📅 {coupon['earned_date']} | 🏷️ عمومی\n"
         
-        if len(active_coupons) > 10:
-            text += f"\n📊 و {len(active_coupons)-10} کوپن دیگر...\n"
-    else:
-        text += "📭 **هیچ کوپن فعالی ندارید.**\n\n"
-    
-    text += "\n💡 هر کوپن را می‌توانید برای هر خدمتی استفاده کنید."
-    
-    await update.message.reply_text(
-        text,
-        reply_markup=get_coupon_management_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
-    )
+        if active_coupons:
+            text += "✅ **کوپن‌های فعال شما:**\n\n"
+            for i, coupon in enumerate(active_coupons[:10], 1):
+                source_emoji = "⏰" if coupon["source"] == "study_streak" else "💳"
+                text += f"{i}. {source_emoji} `{coupon['coupon_code']}`\n"
+                text += f"   📅 {coupon['earned_date']} | "
+                text += f"💰 {coupon['value'] // 10:,} تومان\n"
+            
+            if len(active_coupons) > 10:
+                text += f"\n📊 و {len(active_coupons)-10} کوپن دیگر...\n"
+        else:
+            text += "📭 **هیچ کوپن فعالی ندارید.**\n\n"
+        
+        if used_coupons:
+            text += "\n📋 **کوپن‌های استفاده‌شده:**\n"
+            for i, coupon in enumerate(used_coupons[:3], 1):
+                text += f"{i}. `{coupon['coupon_code']}` - "
+                text += f"برای: {coupon.get('used_for', 'نامشخص')} | "
+                text += f"تاریخ: {coupon.get('used_date', 'نامشخص')}\n"
+            
+            if len(used_coupons) > 3:
+                text += f"... و {len(used_coupons)-3} کوپن دیگر\n"
+        
+        text += "\n💡 هر کوپن را می‌توانید برای هر خدمتی استفاده کنید."
+        
+        await update.message.reply_text(
+            text,
+            reply_markup=get_coupon_management_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        logger.info(f"✅ کوپن‌های کاربر {user_id} نمایش داده شد")
+        
+    except Exception as e:
+        logger.error(f"❌ خطا در نمایش کوپن‌های کاربر {user_id}: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ خطا در دریافت اطلاعات کوپن‌ها.\nلطفا مجدد تلاش کنید.",
+            reply_markup=get_coupon_management_keyboard()
+        )
 
 async def show_user_requests(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """نمایش درخواست‌های کاربر"""

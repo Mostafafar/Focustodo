@@ -1273,6 +1273,7 @@ async def notify_admin_new_user(context: ContextTypes.DEFAULT_TYPE, user: Any) -
                 
     except Exception as e:
         logger.error(f"خطا در اطلاع‌رسانی به ادمین‌ها: {e}")
+
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور /users - نمایش لیست کاربران"""
     user_id = update.effective_user.id
@@ -1285,7 +1286,7 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # دریافت شماره صفحه (اگر وارد شده)
         page = int(context.args[0]) if context.args else 1
         page = max(1, page)
-        limit = 10
+        limit = 8  # کاهش تعداد برای جلوگیری از خطا
         offset = (page - 1) * limit
         
         query = """
@@ -1307,19 +1308,20 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         total_users = db.execute_query(count_query, fetch=True)[0]
         total_pages = (total_users + limit - 1) // limit
         
-        text = f"📋 **لیست کاربران**\n\n"
-        text += f"📊 تعداد کل کاربران: {total_users}\n"
-        text += f"📄 صفحه {page} از {total_pages}\n\n"
+        # ساخت متن با HTML
+        text = "<b>📋 لیست کاربران</b>\n\n"
+        text += f"📊 <b>تعداد کل کاربران:</b> {total_users}\n"
+        text += f"📄 <b>صفحه {page} از {total_pages}</b>\n\n"
         
         for i, row in enumerate(results, 1):
             user_id_db, username, grade, field, is_active, reg_date, total_time, total_sessions = row
             
-            text += f"**{offset + i}. 👤 کاربر**\n"
-            text += f"🆔 `{user_id_db}`\n"
-            text += f"📛 @{username or 'ندارد'}\n"
-            text += f"🎓 {grade} | 🧪 {field}\n"
-            text += f"✅ وضعیت: {'فعال' if is_active else 'غیرفعال'}\n"
-            text += f"📅 ثبت‌نام: {reg_date}\n"
+            text += f"<b>{offset + i}. 👤 کاربر</b>\n"
+            text += f"🆔 <code>{user_id_db}</code>\n"
+            text += f"📛 {html.escape(username or 'ندارد')}\n"
+            text += f"🎓 {html.escape(grade)} | 🧪 {html.escape(field)}\n"
+            text += f"✅ <b>وضعیت:</b> {'فعال' if is_active else 'غیرفعال'}\n"
+            text += f"📅 <b>ثبت‌نام:</b> {html.escape(reg_date or 'نامشخص')}\n"
             
             if total_time:
                 hours = total_time // 60
@@ -1330,9 +1332,13 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     time_display = f"{hours}h"
                 else:
                     time_display = f"{mins}m"
-                text += f"⏰ مطالعه: {time_display} ({total_sessions} جلسه)\n"
+                text += f"⏰ <b>مطالعه:</b> {time_display} ({total_sessions} جلسه)\n"
             
-            text += "─" * 20 + "\n"
+            text += "─" * 15 + "\n"
+        
+        # بررسی طول متن (Telegram limit: 4096 characters)
+        if len(text) > 4000:
+            text = text[:4000] + "\n\n⚠️ <i>(متن برش خورده - کاربران زیاد هستند)</i>"
         
         keyboard = []
         if page > 1:
@@ -1346,12 +1352,12 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(
             text,
             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.HTML  # 🔴 تغییر به HTML
         )
         
     except Exception as e:
         logger.error(f"خطا در نمایش لیست کاربران: {e}")
-        await update.message.reply_text(f"❌ خطا: {e}")
+        await update.message.reply_text(f"❌ خطا: {str(e)[:100]}")
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور /send - ارسال پیام مستقیم به کاربر"""
     user_id = update.effective_user.id

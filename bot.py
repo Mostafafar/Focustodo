@@ -485,7 +485,7 @@ async def debug_all_requests_command(update: Update, context: ContextTypes.DEFAU
     try:
         query = """
         SELECT request_id, user_id, request_type, service_type, 
-               amount, status, created_at, admin_note
+               amount, status, created_at, admin_note, receipt_image
         FROM coupon_requests
         ORDER BY request_id DESC
         LIMIT 20
@@ -494,33 +494,38 @@ async def debug_all_requests_command(update: Update, context: ContextTypes.DEFAU
         results = db.execute_query(query, fetchall=True)
         
         if not results:
-            await update.message.reply_text("📭 هیچ درخواست کوپنی وجود ندارد.")
+            await update.message.reply_text("🔭 هیچ درخواست کوپنی وجود ندارد.")
             return
         
         text = "📋 **همه درخواست‌های کوپن**\n\n"
         
         for row in results:
-            request_id, user_id_db, request_type, service_type, amount, status, created_at, admin_note = row
+            request_id, user_id_db, request_type, service_type, amount, status, created_at, admin_note, receipt_image = row
             
             text += f"🆔 **#{request_id}**\n"
             text += f"👤 کاربر: {user_id_db}\n"
             text += f"📋 نوع: {request_type}\n"
             text += f"💰 مبلغ: {amount or 0:,} تومان\n"
-            text += f"✅ وضعیت: {status}\n"
+            text += f"✅ وضعیت: **{status}**\n"
+            text += f"🖼️ فیش: {'✅ دارد' if receipt_image else '❌ ندارد'}\n"
             text += f"📅 تاریخ: {created_at.strftime('%Y/%m/%d %H:%M') if isinstance(created_at, datetime) else created_at}\n"
             
             if admin_note:
                 text += f"📝 یادداشت: {admin_note[:50]}...\n" if len(admin_note) > 50 else f"📝 یادداشت: {admin_note}\n"
             
+            text += f"🔧 دستور تأیید: `/verify_coupon {request_id}`\n"
             text += "─" * 20 + "\n"
         
-        await update.message.reply_text(
-            text,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        # اگر متن خیلی طولانی شد، به چند بخش تقسیم کن
+        if len(text) > 4000:
+            parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+            for part in parts:
+                await update.message.reply_text(part, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         
     except Exception as e:
-        logger.error(f"خطا در نمایش همه درخواست‌ها: {e}")
+        logger.error(f"خطا در نمایش همه درخواست‌ها: {e}", exc_info=True)
         await update.message.reply_text(f"❌ خطا: {e}")
 def get_pending_coupon_requests() -> List[Dict]:
     """دریافت درخواست‌های کوپن در انتظار"""

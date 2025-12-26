@@ -1128,9 +1128,10 @@ def get_time_selection_keyboard_reply() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
 def get_admin_keyboard_reply() -> ReplyKeyboardMarkup:
-    """منوی ادمین"""
+    """منوی ادمین - به‌روزرسانی شده"""
     keyboard = [
         ["📤 آپلود فایل", "👥 درخواست‌ها"],
+        ["👤 لیست کاربران", "📩 ارسال پیام"],
         ["📁 مدیریت فایل‌ها", "📊 آمار ربات"],
         ["🏠 منوی اصلی"]
     ]

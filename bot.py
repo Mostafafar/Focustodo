@@ -446,10 +446,10 @@ def use_coupon(coupon_code: str, service_type: str) -> bool:
 def create_coupon_request(user_id: int, request_type: str, service_type: str = None, 
                          amount: int = None, receipt_image: str = None) -> Optional[Dict]:
     """ایجاد درخواست جدید کوپن"""
+    result = None  # تعریف اولیه متغیر
     try:
         logger.info(f"🔍 ایجاد درخواست کوپن برای کاربر {user_id}")
         logger.info(f"📋 نوع: {request_type}, خدمت: {service_type}, مبلغ: {amount}")
-        logger.info(f"🔍 رکورد جدید در جدول: {result}")  # لاگ result بعد از INSERT
         
         query = """
         INSERT INTO coupon_requests (user_id, request_type, service_type, amount, receipt_image, status)
@@ -459,6 +459,8 @@ def create_coupon_request(user_id: int, request_type: str, service_type: str = N
         
         logger.info(f"🔍 اجرای کوئری INSERT...")
         result = db.execute_query(query, (user_id, request_type, service_type, amount, receipt_image), fetch=True)
+        
+        logger.info(f"🔍 رکورد جدید در جدول: {result}")  # لاگ result بعد از INSERT
         
         if result:
             request_id, created_at = result

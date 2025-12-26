@@ -384,9 +384,12 @@ def create_coupon(user_id: int, source: str, receipt_image: str = None) -> Optio
         logger.error(f"❌ خطا در ایجاد کوپن: {e}", exc_info=True)
         return None
 
+
 def get_user_coupons(user_id: int, status: str = "active") -> List[Dict]:
     """دریافت کوپن‌های کاربر"""
     try:
+        logger.info(f"🔍 دریافت کوپن‌های کاربر {user_id} با وضعیت '{status}'")
+        
         query = """
         SELECT coupon_id, coupon_code, coupon_source, value, status, 
                earned_date, used_date, used_for
@@ -396,6 +399,8 @@ def get_user_coupons(user_id: int, status: str = "active") -> List[Dict]:
         """
         
         results = db.execute_query(query, (user_id, status), fetchall=True)
+        
+        logger.info(f"🔍 تعداد کوپن‌های یافت شده: {len(results) if results else 0}")
         
         coupons = []
         if results:
@@ -410,11 +415,12 @@ def get_user_coupons(user_id: int, status: str = "active") -> List[Dict]:
                     "used_date": row[6],
                     "used_for": row[7]
                 })
+                logger.info(f"  🎫 {row[1]} - {row[2]} - {row[3]} ریال")
         
         return coupons
         
     except Exception as e:
-        logger.error(f"خطا در دریافت کوپن‌های کاربر: {e}")
+        logger.error(f"❌ خطا در دریافت کوپن‌های کاربر: {e}", exc_info=True)
         return []
 
 def get_coupon_by_code(coupon_code: str) -> Optional[Dict]:

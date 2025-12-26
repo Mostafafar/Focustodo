@@ -3809,6 +3809,9 @@ async def debug_user_match_command(update: Update, context: ContextTypes.DEFAULT
 # هندلرهای پیام متنی (تمام تعاملات)
 # -----------------------------------------------------------
 
+
+    
+    # مدیریت درخواست‌های ادمین
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """پردازش تمام پیام‌های متنی"""
     user_id = update.effective_user.id
@@ -3830,11 +3833,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await start_study_process_text(update, context)
         return
         
+    elif text == "🎫 کوپن":
+        await coupon_menu_handler(update, context)
+        return
+        
     elif text == "🏠 منوی اصلی" or text == "🔙 بازگشت":
-    # پاک کردن تمام حالت‌های مربوط به منابع
+        # پاک کردن تمام حالت‌های مربوط به منابع
         context.user_data.pop("viewing_files", None)
         context.user_data.pop("downloading_file", None)
         context.user_data.pop("last_subject", None)
+        
+        # پاک کردن تمام حالت‌های مربوط به کوپن
+        context.user_data.pop("awaiting_coupon_selection", None)
+        context.user_data.pop("selected_service", None)
+        context.user_data.pop("awaiting_purchase_method", None)
+        context.user_data.pop("awaiting_payment_receipt", None)
+        context.user_data.pop("eligible_for_coupon", None)
+        
         await show_main_menu_text(update, context)
         return
     
@@ -3851,10 +3866,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await admin_manage_files(update, context)
         return
         
-    elif text == "📊 آمار ربات":
-        await admin_show_stats(update, context)
+    elif text == "🎫 مدیریت کوپن":
+        context.user_data["admin_mode"] = True
+        await update.message.reply_text(
+            "🎫 **پنل مدیریت کوپن**\n\n"
+            "لطفا یک عملیات انتخاب کنید:",
+            reply_markup=get_admin_coupon_keyboard()
+        )
         return
-    # در تابع handle_text، به بخش ادمین منو اضافه کنید:
+    
     elif text == "👤 لیست کاربران":
         await users_command(update, context)
         return
@@ -3869,7 +3889,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "📌 آیدی کاربر را از لیست کاربران (/users) دریافت کنید."
         )
         return
-    
+        
+    elif text == "📊 آمار ربات":
+        await admin_show_stats(update, context)
+        return
     
     elif text == "◀️ صفحه قبل" and context.user_data.get("users_page"):
         page = context.user_data.get("users_page", 1) - 1
@@ -3883,6 +3906,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         page = context.user_data.get("users_page", 1) + 1
         context.args = [str(page)]
         await users_command(update, context)
+        return
+    
+    # مدیریت کوپن ادمین
+    elif text == "📋 درخواست‌های کوپن":
+        await coupon_requests_command(update, context)
+        return
+        
+    elif text == "🏦 تغییر کارت":
+        await update.message.reply_text(
+            "🏦 **تغییر شماره کارت**\n\n"
+            "برای تغییر شماره کارت از دستور زیر استفاده کنید:\n"
+            "/set_card <شماره_کارت> <نام_صاحب_کارت>\n\n"
+            "مثال:\n"
+            "/set_card ۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸ علی_محمدی\n\n"
+            "برای مشاهده شماره کارت فعلی: /set_card"
+        )
+        return
+        
+    elif text == "📊 آمار کوپن‌ها":
+        await coupon_stats_command(update, context)
         return
     
     # اتمام مطالعه
@@ -3909,7 +3952,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 await admin_show_stats(update, context)
         return
     
-    
     # مدیریت درخواست‌های ادمین
     elif text == "✅ تأیید همه":
         await admin_approve_all(update, context)
@@ -3935,9 +3977,80 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await start_study_process_text(update, context)
         return
     
+    # خدمات کوپن
+    elif text in ["📞 تماس تلفنی (۱ کوپن)", "📊 تحلیل گزارش (۱ کوپن)", 
+                  "✏️ تصحیح آزمون (۱ کوپن)", "📈 تحلیل آزمون (۱ کوپن)", 
+                  "📝 آزمون شخصی (۲ کوپن)", "🔗 برنامه شخصی"]:
+        await handle_coupon_service_selection(update, context, text)
+        return
+    
+    # مدیریت کوپن کاربر
+    elif text == "🎫 کوپن‌های من":
+        await show_user_coupons(update, context, user_id)
+        return
+        
+    elif text == "🛒 خرید کوپن":
+        await handle_coupon_purchase(update, context)
+        return
+        
+    elif text == "📋 درخواست‌های من":
+        await show_user_requests(update, context, user_id)
+        return
+    
+    # روش‌های کسب کوپن
+    elif text == "⏰ کسب از مطالعه":
+        await handle_study_coupon_earning(update, context)
+        return
+        
+    elif text == "💳 خرید کوپن":
+        await handle_coupon_purchase(update, context)
+        return
+    
+    # دریافت کوپن از مطالعه
+    elif text == "✅ دریافت کوپن":
+        if "eligible_for_coupon" in context.user_data:
+            streak_info = context.user_data["eligible_for_coupon"]
+            coupon = award_streak_coupon(user_id, streak_info["streak_id"])
+            
+            if coupon:
+                text = f"""
+🎉 **تبریک! شما یک کوپن کسب کردید!**
+
+📊 عملکرد ۲ روز اخیر شما:
+✅ دیروز: {streak_info['yesterday_minutes'] // 60} ساعت و {streak_info['yesterday_minutes'] % 60} دقیقه
+✅ امروز: {streak_info['today_minutes'] // 60} ساعت و {streak_info['today_minutes'] % 60} دقیقه
+🎯 مجموع: {streak_info['total_hours']} ساعت در ۲ روز
+
+🎫 **کوپن عمومی جدید شما:**
+کد: `{coupon['coupon_code']}`
+ارزش: ۴۰,۰۰۰ تومان
+منبع: کسب از طریق مطالعه
+تاریخ: {coupon['earned_date']}
+
+💡 این کوپن را می‌توانید برای هر خدمتی استفاده کنید!
+
+📋 برای مشاهده کوپن‌ها: «🎫 کوپن‌های من»
+"""
+                await update.message.reply_text(
+                    text,
+                    reply_markup=get_coupon_main_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ خطا در ایجاد کوپن. لطفا مجدد تلاش کنید.",
+                    reply_markup=get_coupon_main_keyboard()
+                )
+            
+            context.user_data.pop("eligible_for_coupon", None)
+        return
+    
+    # تأیید عضویت در کانال
+    elif text == "✅ تأیید عضویت":
+        await handle_channel_subscription(update, context, user_id)
+        return
+    
     # پردازش انتخاب درس
-    # پردازش انتخاب درس
-# 1. ابتدا بررسی حالت دانلود (مهم!)
     if context.user_data.get("downloading_file") and text.startswith("دانلود"):
         try:
             file_id = int(text.split(" ")[1])
@@ -3946,15 +4059,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await update.message.reply_text("❌ فرمت نامعتبر.")
         return
 
-# 2. سپس بررسی انتخاب درس
+    # پردازش انتخاب درس
     if text in SUBJECTS:
-    # بررسی اینکه آیا کاربر در حال مشاهده منابع است؟
+        # بررسی اینکه آیا کاربر در حال مشاهده منابع است؟
         if context.user_data.get("viewing_files"):
             await show_subject_files_text(update, context, user_id, text)
             return
         else:
             await select_subject_text(update, context, text)
             return
+    
     # پردازش انتخاب زمان
     for display_text, minutes in SUGGESTED_TIMES:
         if text == display_text:
@@ -3963,6 +4077,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     if text == "✏️ زمان دلخواه":
         await request_custom_time_text(update, context)
+        return
+    
+    # پردازش وارد کردن کد کوپن برای استفاده
+    if context.user_data.get("awaiting_coupon_selection"):
+        await handle_coupon_usage(update, context, user_id, text)
+        return
+    
+    # پردازش فیش پرداختی
+    if context.user_data.get("awaiting_payment_receipt") and text != "🔙 بازگشت":
+        await handle_payment_receipt(update, context, user_id, text)
         return
     
     # ثبت‌نام کاربر جدید
@@ -3981,15 +4105,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # پردازش فایل‌های درس
     if context.user_data.get("viewing_files") and text != "🔙 بازگشت":
         await show_subject_files_text(update, context, user_id, text)
-        return
-    
-    # دانلود فایل
-    if context.user_data.get("downloading_file") and text.startswith("دانلود"):
-        try:
-            file_id = int(text.split(" ")[1])
-            await download_file_text(update, context, user_id, file_id)
-        except:
-            await update.message.reply_text("❌ فرمت نامعتبر.")
         return
     
     # مدیریت ادمین
@@ -4038,7 +4153,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         "لطفا از منوی ربات استفاده کنید.",
         reply_markup=get_main_menu_keyboard()
-    )
+        )
 async def switch_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                      message: str, reply_markup: ReplyKeyboardMarkup) -> None:
     """تغییر منو با انیمیشن و حذف کیبورد قدیمی"""

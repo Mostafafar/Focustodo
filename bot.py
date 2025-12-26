@@ -1894,13 +1894,13 @@ def delete_file(file_id: int) -> bool:
 # -----------------------------------------------------------
 
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """منوی اصلی"""
+    """منوی اصلی - به‌روزرسانی شده"""
     keyboard = [
         ["🏆 رتبه‌بندی", "📚 منابع"],
-        ["➕ ثبت مطالعه", "🏠 منوی اصلی"]
+        ["➕ ثبت مطالعه", "🎫 کوپن"],  # تغییر اینجا
+        ["🏠 منوی اصلی"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
-
 def get_subjects_keyboard_reply() -> ReplyKeyboardMarkup:
     """کیبورد انتخاب درس"""
     keyboard = []
@@ -1992,6 +1992,7 @@ def get_complete_study_keyboard() -> ReplyKeyboardMarkup:
 # -----------------------------------------------------------
 # هندلرهای دستورات
 # -----------------------------------------------------------
+
 
 async def send_midday_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     """ارسال گزارش نیم‌روز ساعت 15:00"""

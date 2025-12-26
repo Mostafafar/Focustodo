@@ -461,7 +461,7 @@ def use_coupon(coupon_code: str, service_type: str) -> bool:
         logger.error(f"خطا در استفاده از کوپن: {e}")
         return False
 
-def create_coupon_request(user_id: int, request_type: str, service_type: str = None, 
+
 def create_coupon_request(user_id: int, request_type: str, service_type: str = None, 
                          amount: int = None, receipt_image: str = None) -> Optional[Dict]:
     """ایجاد درخواست جدید کوپن"""

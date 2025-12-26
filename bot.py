@@ -504,26 +504,39 @@ def get_pending_coupon_requests() -> List[Dict]:
 def approve_coupon_request(request_id: int, admin_note: str = "") -> bool:
     """تأیید درخواست کوپن"""
     try:
+        logger.info(f"🔍 شروع تأیید درخواست کوپن #{request_id}")
+        
         # دریافت اطلاعات درخواست
         query = """
-        SELECT user_id, request_type, amount, receipt_image
+        SELECT user_id, request_type, amount, receipt_image, status
         FROM coupon_requests
-        WHERE request_id = %s AND status = 'pending'
+        WHERE request_id = %s
         """
         
         request = db.execute_query(query, (request_id,), fetch=True)
         
         if not request:
+            logger.error(f"❌ درخواست #{request_id} یافت نشد")
             return False
         
-        user_id, request_type, amount, receipt_image = request
+        user_id, request_type, amount, receipt_image, current_status = request
+        logger.info(f"🔍 درخواست #{request_id} یافت شد: کاربر={user_id}, نوع={request_type}, وضعیت={current_status}")
+        
+        # بررسی وضعیت درخواست
+        if current_status != 'pending':
+            logger.error(f"❌ درخواست #{request_id} در وضعیت '{current_status}' است، نه 'pending'")
+            return False
         
         # ایجاد کوپن برای کاربر
         if request_type == "purchase":
+            logger.info(f"🔍 ایجاد کوپن برای کاربر {user_id}")
             coupon = create_coupon(user_id, "purchased", receipt_image)
             
             if not coupon:
+                logger.error(f"❌ خطا در ایجاد کوپن برای کاربر {user_id}")
                 return False
+            
+            logger.info(f"✅ کوپن ایجاد شد: {coupon['coupon_code']}")
             
             # بروزرسانی وضعیت درخواست
             query = """
@@ -531,11 +544,16 @@ def approve_coupon_request(request_id: int, admin_note: str = "") -> bool:
             SET status = 'approved', admin_note = %s
             WHERE request_id = %s
             """
-            db.execute_query(query, (admin_note, request_id))
+            rows_updated = db.execute_query(query, (admin_note, request_id))
+            
+            if rows_updated > 0:
+                logger.info(f"✅ درخواست #{request_id} بروزرسانی شد. {rows_updated} ردیف تأثیر پذیرفت")
+            else:
+                logger.error(f"❌ هیچ ردیفی در بروزرسانی درخواست #{request_id} تأثیر نپذیرفت")
+                return False
             
             # ارسال پیام به کاربر
             try:
-                from telegram.constants import ParseMode
                 message = f"""
 ✅ **درخواست خرید کوپن شما تأیید شد!**
 
@@ -547,16 +565,22 @@ def approve_coupon_request(request_id: int, admin_note: str = "") -> bool:
 برای استفاده، از منوی 🎫 کوپن استفاده کنید.
 """
                 # اینجا باید context را داشته باشیم، فعلاً فقط لاگ می‌کنیم
-                logger.info(f"کوپن برای کاربر {user_id} ایجاد شد: {coupon['coupon_code']}")
+                logger.info(f"✅ کوپن برای کاربر {user_id} ایجاد شد: {coupon['coupon_code']}")
+                
+                # در اینجا باید پیام به کاربر ارسال شود
+                # برای این کار می‌توانیم context را از طریق پارامتر اضافی دریافت کنیم
+                # یا تابع را async کنیم
+                
             except Exception as e:
-                logger.error(f"خطا در اطلاع به کاربر: {e}")
+                logger.error(f"⚠️ خطا در اطلاع به کاربر: {e}")
             
             return True
         
+        logger.error(f"❌ نوع درخواست نامعتبر: {request_type}")
         return False
         
     except Exception as e:
-        logger.error(f"خطا در تأیید درخواست کوپن: {e}")
+        logger.error(f"❌ خطا در تأیید درخواست کوپن: {e}", exc_info=True)
         return False
 
 # -----------------------------------------------------------

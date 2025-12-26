@@ -462,12 +462,20 @@ def use_coupon(coupon_code: str, service_type: str) -> bool:
         return False
 
 def create_coupon_request(user_id: int, request_type: str, service_type: str = None, 
+def create_coupon_request(user_id: int, request_type: str, service_type: str = None, 
                          amount: int = None, receipt_image: str = None) -> Optional[Dict]:
     """ایجاد درخواست جدید کوپن"""
-    result = None  # تعریف اولیه متغیر
+    conn = None
+    cursor = None
     try:
         logger.info(f"🔍 ایجاد درخواست کوپن برای کاربر {user_id}")
         logger.info(f"📋 نوع: {request_type}, خدمت: {service_type}, مبلغ: {amount}")
+        
+        # استفاده مستقیم از connection (نه از execute_query)
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        logger.info(f"✅ Connection دریافت شد")
         
         query = """
         INSERT INTO coupon_requests (user_id, request_type, service_type, amount, receipt_image, status)
@@ -475,24 +483,74 @@ def create_coupon_request(user_id: int, request_type: str, service_type: str = N
         RETURNING request_id, created_at
         """
         
-        logger.info(f"🔍 اجرای کوئری INSERT...")
-        result = db.execute_query(query, (user_id, request_type, service_type, amount, receipt_image), fetch=True)
+        params = (user_id, request_type, service_type, amount, receipt_image)
+        logger.info(f"🔍 اجرای INSERT با پارامترها: {params}")
         
-        logger.info(f"🔍 رکورد جدید در جدول: {result}")  # لاگ result بعد از INSERT
+        cursor.execute(query, params)
+        
+        result = cursor.fetchone()
+        logger.info(f"🔍 نتیجه fetchone: {result}")
         
         if result:
             request_id, created_at = result
-            logger.info(f"✅ درخواست کوپن ایجاد شد: #{request_id} در {created_at}")
+            logger.info(f"✅ INSERT موفق - درخواست #{request_id}")
+            
+            # حتماً commit کن
+            conn.commit()
+            logger.info(f"✅ Commit انجام شد برای درخواست #{request_id}")
+            
+            # فوراً بررسی کن که ذخیره شده
+            cursor.execute("SELECT request_id FROM coupon_requests WHERE request_id = %s", (request_id,))
+            verify = cursor.fetchone()
+            logger.info(f"🔍 تأیید ذخیره‌سازی: {verify}")
+            
             return {
                 "request_id": request_id,
                 "created_at": created_at
             }
         else:
             logger.error("❌ هیچ نتیجه‌ای از INSERT برگشت داده نشد")
+            conn.rollback()
             return None
         
     except Exception as e:
         logger.error(f"❌ خطا در ایجاد درخواست کوپن: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return None
+        
+    finally:
+        if cursor:
+            cursor.close()
+            logger.info("🔒 Cursor بسته شد")
+        if conn:
+            db.return_connection(conn)
+            logger.info("🔌 Connection بازگردانده شد")
+def test_execute_query_directly():
+    """تست مستقیم تابع execute_query"""
+    try:
+        logger.info("🧪 تست مستقیم execute_query...")
+        
+        # تست 1: INSERT ساده
+        query = """
+        INSERT INTO coupon_requests (user_id, request_type, amount, status)
+        VALUES (999888777, 'test_execute', 5000, 'pending')
+        RETURNING request_id
+        """
+        
+        result = db.execute_query(query, fetch=True)
+        logger.info(f"🔍 نتیجه execute_query: {result}")
+        
+        # تست 2: SELECT برای بررسی
+        if result:
+            query_select = "SELECT * FROM coupon_requests WHERE request_id = %s"
+            select_result = db.execute_query(query_select, (result[0],), fetch=True)
+            logger.info(f"🔍 نتیجه SELECT پس از INSERT: {select_result}")
+            
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ خطا در تست execute_query: {e}", exc_info=True)
         return None
 
 async def debug_all_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -5716,6 +5774,7 @@ def main() -> None:
         import traceback
         traceback.print_exc()
         raise
+
 
 if __name__ == "__main__":
     main()

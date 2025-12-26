@@ -4409,6 +4409,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     
     # پردازش وارد کردن کد کوپن برای استفاده
+    # پردازش وارد کردن کد کوپن برای استفاده
     if context.user_data.get("awaiting_coupon_selection"):
         await handle_coupon_usage(update, context, user_id, text)
         return
@@ -4483,6 +4484,181 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "لطفا از منوی ربات استفاده کنید.",
         reply_markup=get_main_menu_keyboard()
         )
+async def handle_coupon_usage(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, text: str) -> None:
+    """پردازش استفاده از کوپن"""
+    logger.info(f"🔍 پردازش استفاده از کوپن: کاربر {user_id}، متن: {text}")
+    
+    if text == "🔙 بازگشت":
+        context.user_data.pop("awaiting_coupon_selection", None)
+        context.user_data.pop("selected_service", None)
+        await coupon_menu_handler(update, context)
+        return
+    
+    # بررسی کد کوپن
+    coupon_code = text.strip().upper()
+    
+    # اگر کاربر چند کوپن وارد کرده (برای خدمت‌هایی که نیاز به چند کوپن دارند)
+    if "," in coupon_code:
+        coupon_codes = [code.strip().upper() for code in coupon_code.split(",")]
+    else:
+        coupon_codes = [coupon_code]
+    
+    logger.info(f"🔍 کدهای کوپن وارد شده: {coupon_codes}")
+    
+    # دریافت اطلاعات خدمت انتخاب شده
+    service_info = context.user_data.get("selected_service")
+    if not service_info:
+        await update.message.reply_text(
+            "❌ اطلاعات خدمت یافت نشد. لطفا مجدد تلاش کنید.",
+            reply_markup=get_coupon_main_keyboard()
+        )
+        return
+    
+    # بررسی تعداد کوپن‌های لازم
+    if len(coupon_codes) != service_info["price"]:
+        await update.message.reply_text(
+            f"❌ تعداد کوپن نامعتبر!\n\n"
+            f"برای {service_info['name']} نیاز به {service_info['price']} کوپن دارید.\n"
+            f"شما {len(coupon_codes)} کوپن وارد کردید.",
+            reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True)
+        )
+        return
+    
+    # بررسی اعتبار هر کوپن
+    valid_coupons = []
+    invalid_coupons = []
+    
+    for code in coupon_codes:
+        coupon = get_coupon_by_code(code)
+        
+        if not coupon:
+            invalid_coupons.append(f"{code} (پیدا نشد)")
+        elif coupon["status"] != "active":
+            invalid_coupons.append(f"{code} (وضعیت: {coupon['status']})")
+        elif coupon["user_id"] != user_id:
+            invalid_coupons.append(f"{code} (متعلق به شما نیست)")
+        else:
+            valid_coupons.append(coupon)
+    
+    if invalid_coupons:
+        error_text = "❌ کوپن‌های نامعتبر:\n"
+        for invalid in invalid_coupons:
+            error_text += f"• {invalid}\n"
+        
+        await update.message.reply_text(
+            error_text + "\nلطفا کدهای صحیح را وارد کنید:",
+            reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True)
+        )
+        return
+    
+    # استفاده از کوپن‌ها و ثبت درخواست
+    try:
+        # استفاده از کوپن‌ها
+        for coupon in valid_coupons:
+            if not use_coupon(coupon["coupon_code"], service_info["name"]):
+                logger.error(f"❌ خطا در استفاده از کوپن {coupon['coupon_code']}")
+                await update.message.reply_text(
+                    f"❌ خطا در استفاده از کوپن {coupon['coupon_code']}",
+                    reply_markup=get_coupon_main_keyboard()
+                )
+                return
+        
+        # ایجاد درخواست استفاده از کوپن
+        coupon_codes_str = ",".join([c["coupon_code"] for c in valid_coupons])
+        
+        request_data = create_coupon_request(
+            user_id=user_id,
+            request_type="usage",
+            service_type=get_service_type_key(service_info["name"]),
+            amount=0,  # چون با کوپن پرداخت شده
+            receipt_image=None
+        )
+        
+        if not request_data:
+            await update.message.reply_text(
+                "❌ خطا در ثبت درخواست. لطفا با پشتیبانی تماس بگیرید.",
+                reply_markup=get_coupon_main_keyboard()
+            )
+            return
+        
+        date_str, time_str = get_iran_time()
+        
+        # نمایش موفقیت
+        text = f"""
+✅ **درخواست شما ثبت شد!**
+
+🎯 خدمت: {service_info['name']}
+💰 روش پرداخت: {len(valid_coupons)} کوپن
+🎫 کدهای استفاده شده: {coupon_codes_str}
+📅 تاریخ: {date_str}
+🕒 زمان: {time_str}
+
+⏳ درخواست شما برای بررسی به ادمین ارسال شد.
+پس از تأیید، با شما تماس گرفته می‌شود.
+
+📋 شماره درخواست: #{request_data['request_id']}
+"""
+        
+        await update.message.reply_text(
+            text,
+            reply_markup=get_coupon_main_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # ارسال اطلاع به ادمین‌ها
+        user_info = get_user_info(user_id)
+        username = user_info["username"] if user_info else "نامشخص"
+        user_full_name = update.effective_user.full_name or "نامشخص"
+        
+        for admin_id in ADMIN_IDS:
+            try:
+                admin_text = f"""
+🎫 **درخواست جدید استفاده از کوپن**
+
+📋 **اطلاعات درخواست:**
+• شماره درخواست: #{request_data['request_id']}
+• کاربر: {escape_html_for_telegram(user_full_name)}
+• آیدی: `{user_id}`
+• نام کاربری: @{username or 'ندارد'}
+• خدمت: {service_info['name']}
+• کدهای کوپن: {coupon_codes_str}
+• تاریخ: {date_str}
+• زمان: {time_str}
+
+📝 برای تأیید دستور زیر را وارد کنید:
+<code>/verify_coupon {request_data['request_id']}</code>
+"""
+                
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_text,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"خطا در ارسال به ادمین {admin_id}: {e}")
+        
+        # پاک کردن حالت‌ها
+        context.user_data.pop("awaiting_coupon_selection", None)
+        context.user_data.pop("selected_service", None)
+        
+    except Exception as e:
+        logger.error(f"❌ خطا در پردازش استفاده از کوپن: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ خطا در پردازش درخواست. لطفا مجدد تلاش کنید.",
+            reply_markup=get_coupon_main_keyboard()
+        )
+
+def get_service_type_key(service_name: str) -> str:
+    """تبدیل نام خدمت به کلید"""
+    service_map = {
+        "تماس تلفنی": "call",
+        "تحلیل گزارش کار": "analysis",
+        "تصحیح آزمون تشریحی": "correction",
+        "تحلیل آزمون": "test_analysis",
+        "آزمون شخصی": "exam"
+    }
+    return service_map.get(service_name, service_name.lower())
+
 async def switch_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                      message: str, reply_markup: ReplyKeyboardMarkup) -> None:
     """تغییر منو با انیمیشن و حذف کیبورد قدیمی"""

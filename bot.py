@@ -243,7 +243,7 @@ class Database:
           """,
 
             # جدول جدید: کوپن‌ها
-            """
+          """
             CREATE TABLE IF NOT EXISTS coupons (
                 coupon_id SERIAL PRIMARY KEY,
                 user_id BIGINT REFERENCES users(user_id),

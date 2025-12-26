@@ -128,10 +128,72 @@ class Database:
                 cursor.close()
             if conn:
                 self.return_connection(conn)
-    
     def create_tables(self):
         """ایجاد جداول دیتابیس"""
         queries = [
+            # جداول موجود...
+            
+            # جدول جدید: کوپن‌ها
+            """
+            CREATE TABLE IF NOT EXISTS coupons (
+                coupon_id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                coupon_code VARCHAR(50) UNIQUE,
+                coupon_source VARCHAR(50),
+                value INTEGER DEFAULT 400000,
+                status VARCHAR(20) DEFAULT 'active',
+                earned_date VARCHAR(50),
+                used_date VARCHAR(50),
+                used_for VARCHAR(50),
+                purchase_receipt TEXT,
+                admin_card_number VARCHAR(50),
+                verified_by_admin BOOLEAN DEFAULT FALSE,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            
+            # جدول جدید: استرک‌های مطالعه
+            """
+            CREATE TABLE IF NOT EXISTS user_study_streaks (
+                streak_id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                start_date VARCHAR(50),
+                end_date VARCHAR(50),
+                total_hours INTEGER,
+                days_count INTEGER,
+                earned_coupon BOOLEAN DEFAULT FALSE,
+                coupon_id INTEGER REFERENCES coupons(coupon_id),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            
+            # جدول جدید: درخواست‌های کوپن
+            """
+            CREATE TABLE IF NOT EXISTS coupon_requests (
+                request_id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                request_type VARCHAR(50), -- 'purchase', 'usage'
+                service_type VARCHAR(50), -- 'call', 'analysis', 'correction', 'exam', 'test_analysis'
+                coupon_codes TEXT, -- کدهای کوپن برای استفاده
+                amount INTEGER, -- مبلغ پرداختی
+                status VARCHAR(20) DEFAULT 'pending', -- 'pending', 'approved', 'rejected', 'completed'
+                receipt_image TEXT, -- عکس فیش
+                admin_note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            
+            # جدول جدید: تنظیمات سیستم
+            """
+            CREATE TABLE IF NOT EXISTS system_settings (
+                setting_id SERIAL PRIMARY KEY,
+                setting_key VARCHAR(100) UNIQUE,
+                setting_value TEXT,
+                description TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
             """
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -259,6 +321,449 @@ db = Database()
 # -----------------------------------------------------------
 # توابع کمکی
 # -----------------------------------------------------------
+def generate_coupon_code() -> str:
+    """تولید کد کوپن یکتا"""
+    import random
+    import string
+    
+    timestamp = int(time.time()) % 10000
+    random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return f"FT{timestamp:04d}{random_str}"
+
+def create_coupon(user_id: int, source: str, receipt_image: str = None) -> Optional[Dict]:
+    """ایجاد کوپن جدید"""
+    try:
+        date_str, time_str = get_iran_time()
+        coupon_code = generate_coupon_code()
+        
+        query = """
+        INSERT INTO coupons (user_id, coupon_code, coupon_source, value, earned_date, 
+                           purchase_receipt, status, verified_by_admin)
+        VALUES (%s, %s, %s, %s, %s, %s, 'active', TRUE)
+        RETURNING coupon_id, coupon_code, earned_date
+        """
+        
+        result = db.execute_query(query, (user_id, coupon_code, source, 400000, date_str, receipt_image), fetch=True)
+        
+        if result:
+            return {
+                "coupon_id": result[0],
+                "coupon_code": result[1],
+                "earned_date": result[2],
+                "value": 400000,
+                "source": source
+            }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"خطا در ایجاد کوپن: {e}")
+        return None
+
+def get_user_coupons(user_id: int, status: str = "active") -> List[Dict]:
+    """دریافت کوپن‌های کاربر"""
+    try:
+        query = """
+        SELECT coupon_id, coupon_code, coupon_source, value, status, 
+               earned_date, used_date, used_for
+        FROM coupons
+        WHERE user_id = %s AND status = %s
+        ORDER BY earned_date DESC
+        """
+        
+        results = db.execute_query(query, (user_id, status), fetchall=True)
+        
+        coupons = []
+        if results:
+            for row in results:
+                coupons.append({
+                    "coupon_id": row[0],
+                    "coupon_code": row[1],
+                    "source": row[2],
+                    "value": row[3],
+                    "status": row[4],
+                    "earned_date": row[5],
+                    "used_date": row[6],
+                    "used_for": row[7]
+                })
+        
+        return coupons
+        
+    except Exception as e:
+        logger.error(f"خطا در دریافت کوپن‌های کاربر: {e}")
+        return []
+
+def get_coupon_by_code(coupon_code: str) -> Optional[Dict]:
+    """دریافت اطلاعات کوپن بر اساس کد"""
+    try:
+        query = """
+        SELECT coupon_id, user_id, coupon_code, coupon_source, value, 
+               status, earned_date, used_date, used_for
+        FROM coupons
+        WHERE coupon_code = %s
+        """
+        
+        result = db.execute_query(query, (coupon_code,), fetch=True)
+        
+        if result:
+            return {
+                "coupon_id": result[0],
+                "user_id": result[1],
+                "coupon_code": result[2],
+                "source": result[3],
+                "value": result[4],
+                "status": result[5],
+                "earned_date": result[6],
+                "used_date": result[7],
+                "used_for": result[8]
+            }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"خطا در دریافت کوپن: {e}")
+        return None
+
+def use_coupon(coupon_code: str, service_type: str) -> bool:
+    """استفاده از کوپن برای یک خدمت"""
+    try:
+        date_str, time_str = get_iran_time()
+        
+        query = """
+        UPDATE coupons
+        SET status = 'used', used_date = %s, used_for = %s
+        WHERE coupon_code = %s AND status = 'active'
+        """
+        
+        rows_updated = db.execute_query(query, (date_str, service_type, coupon_code))
+        
+        return rows_updated > 0
+        
+    except Exception as e:
+        logger.error(f"خطا در استفاده از کوپن: {e}")
+        return False
+
+def create_coupon_request(user_id: int, request_type: str, service_type: str = None, 
+                         amount: int = None, receipt_image: str = None) -> Optional[Dict]:
+    """ایجاد درخواست جدید کوپن"""
+    try:
+        query = """
+        INSERT INTO coupon_requests (user_id, request_type, service_type, amount, receipt_image, status)
+        VALUES (%s, %s, %s, %s, %s, 'pending')
+        RETURNING request_id, created_at
+        """
+        
+        result = db.execute_query(query, (user_id, request_type, service_type, amount, receipt_image), fetch=True)
+        
+        if result:
+            return {
+                "request_id": result[0],
+                "created_at": result[1]
+            }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"خطا در ایجاد درخواست کوپن: {e}")
+        return None
+
+def get_pending_coupon_requests() -> List[Dict]:
+    """دریافت درخواست‌های کوپن در انتظار"""
+    try:
+        query = """
+        SELECT cr.request_id, cr.user_id, cr.request_type, cr.service_type, 
+               cr.amount, cr.receipt_image, cr.created_at, u.username
+        FROM coupon_requests cr
+        JOIN users u ON cr.user_id = u.user_id
+        WHERE cr.status = 'pending'
+        ORDER BY cr.created_at DESC
+        """
+        
+        results = db.execute_query(query, fetchall=True)
+        
+        requests = []
+        if results:
+            for row in results:
+                requests.append({
+                    "request_id": row[0],
+                    "user_id": row[1],
+                    "request_type": row[2],
+                    "service_type": row[3],
+                    "amount": row[4],
+                    "receipt_image": row[5],
+                    "created_at": row[6],
+                    "username": row[7]
+                })
+        
+        return requests
+        
+    except Exception as e:
+        logger.error(f"خطا در دریافت درخواست‌های کوپن: {e}")
+        return []
+
+def approve_coupon_request(request_id: int, admin_note: str = "") -> bool:
+    """تأیید درخواست کوپن"""
+    try:
+        # دریافت اطلاعات درخواست
+        query = """
+        SELECT user_id, request_type, amount, receipt_image
+        FROM coupon_requests
+        WHERE request_id = %s AND status = 'pending'
+        """
+        
+        request = db.execute_query(query, (request_id,), fetch=True)
+        
+        if not request:
+            return False
+        
+        user_id, request_type, amount, receipt_image = request
+        
+        # ایجاد کوپن برای کاربر
+        if request_type == "purchase":
+            coupon = create_coupon(user_id, "purchased", receipt_image)
+            
+            if not coupon:
+                return False
+            
+            # بروزرسانی وضعیت درخواست
+            query = """
+            UPDATE coupon_requests
+            SET status = 'approved', admin_note = %s
+            WHERE request_id = %s
+            """
+            db.execute_query(query, (admin_note, request_id))
+            
+            # ارسال پیام به کاربر
+            try:
+                from telegram.constants import ParseMode
+                message = f"""
+✅ **درخواست خرید کوپن شما تأیید شد!**
+
+🎫 کد کوپن: `{coupon['coupon_code']}`
+💰 ارزش: ۴۰,۰۰۰ تومان
+📅 تاریخ: {coupon['earned_date']}
+
+💡 این کوپن را می‌توانید برای هر خدمتی استفاده کنید.
+برای استفاده، از منوی 🎫 کوپن استفاده کنید.
+"""
+                # اینجا باید context را داشته باشیم، فعلاً فقط لاگ می‌کنیم
+                logger.info(f"کوپن برای کاربر {user_id} ایجاد شد: {coupon['coupon_code']}")
+            except Exception as e:
+                logger.error(f"خطا در اطلاع به کاربر: {e}")
+            
+            return True
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"خطا در تأیید درخواست کوپن: {e}")
+        return False
+
+# -----------------------------------------------------------
+# 3. توابع جدید برای مدیریت تنظیمات
+# -----------------------------------------------------------
+
+def get_admin_card_info() -> Dict:
+    """دریافت اطلاعات کارت ادمین"""
+    try:
+        query = """
+        SELECT setting_value FROM system_settings
+        WHERE setting_key = 'admin_card_info'
+        """
+        
+        result = db.execute_query(query, fetch=True)
+        
+        if result and result[0]:
+            return json.loads(result[0])
+        
+        # اطلاعات پیش‌فرض
+        return {
+            "card_number": "۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸",
+            "card_owner": "علی محمدی"
+        }
+        
+    except Exception as e:
+        logger.error(f"خطا در دریافت اطلاعات کارت: {e}")
+        return {
+            "card_number": "۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸",
+            "card_owner": "علی محمدی"
+        }
+
+def set_admin_card_info(card_number: str, card_owner: str) -> bool:
+    """ذخیره اطلاعات کارت ادمین"""
+    try:
+        card_info = json.dumps({
+            "card_number": card_number,
+            "card_owner": card_owner,
+            "updated_at": datetime.now(IRAN_TZ).strftime("%Y/%m/%d %H:%M")
+        })
+        
+        query = """
+        INSERT INTO system_settings (setting_key, setting_value, description)
+        VALUES ('admin_card_info', %s, 'شماره کارت و نام صاحب حساب ادمین')
+        ON CONFLICT (setting_key) DO UPDATE SET
+            setting_value = EXCLUDED.setting_value,
+            updated_at = CURRENT_TIMESTAMP
+        """
+        
+        db.execute_query(query, (card_info,))
+        
+        logger.info(f"✅ اطلاعات کارت ادمین به‌روزرسانی شد: {card_number}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"خطا در ذخیره اطلاعات کارت: {e}")
+        return False
+
+def initialize_default_settings():
+    """مقداردهی اولیه تنظیمات سیستم"""
+    try:
+        # کارت ادمین
+        if not get_admin_card_info().get("card_number"):
+            set_admin_card_info("۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸", "علی محمدی")
+        
+        logger.info("✅ تنظیمات پیش‌فرض سیستم مقداردهی شد")
+        
+    except Exception as e:
+        logger.error(f"خطا در مقداردهی تنظیمات: {e}")
+
+# -----------------------------------------------------------
+# 4. توابع جدید برای سیستم کسب خودکار کوپن
+# -----------------------------------------------------------
+
+def check_study_streak(user_id: int) -> Optional[Dict]:
+    """بررسی استرک مطالعه کاربر برای کسب کوپن"""
+    try:
+        date_str, _ = get_iran_time()
+        today = datetime.now(IRAN_TZ)
+        yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        today_str = today.strftime("%Y-%m-%d")
+        
+        # بررسی مطالعه دیروز
+        query_yesterday = """
+        SELECT COALESCE(SUM(total_minutes), 0) 
+        FROM daily_rankings 
+        WHERE user_id = %s AND date = %s
+        """
+        yesterday_minutes = db.execute_query(query_yesterday, (user_id, yesterday), fetch=True)
+        yesterday_minutes = yesterday_minutes[0] if yesterday_minutes else 0
+        
+        # بررسی مطالعه امروز
+        query_today = """
+        SELECT COALESCE(SUM(total_minutes), 0) 
+        FROM daily_rankings 
+        WHERE user_id = %s AND date = %s
+        """
+        today_minutes = db.execute_query(query_today, (user_id, today_str), fetch=True)
+        today_minutes = today_minutes[0] if today_minutes else 0
+        
+        # شرط کسب کوپن: هر روز حداقل ۶ ساعت (۳۶۰ دقیقه)
+        if yesterday_minutes >= 360 and today_minutes >= 360:
+            # بررسی نکرده باشد قبلاً برای این دوره کوپن گرفته
+            query_check = """
+            SELECT streak_id FROM user_study_streaks
+            WHERE user_id = %s AND end_date = %s AND earned_coupon = TRUE
+            """
+            already_earned = db.execute_query(query_check, (user_id, today_str), fetch=True)
+            
+            if not already_earned:
+                # ایجاد استرک
+                query_streak = """
+                INSERT INTO user_study_streaks (user_id, start_date, end_date, 
+                                              total_hours, days_count, earned_coupon)
+                VALUES (%s, %s, %s, %s, %s, FALSE)
+                RETURNING streak_id
+                """
+                
+                total_hours = (yesterday_minutes + today_minutes) // 60
+                streak_id = db.execute_query(query_streak, 
+                    (user_id, yesterday, today_str, total_hours, 2), fetch=True)
+                
+                if streak_id:
+                    return {
+                        "eligible": True,
+                        "yesterday_minutes": yesterday_minutes,
+                        "today_minutes": today_minutes,
+                        "total_hours": total_hours,
+                        "streak_id": streak_id[0]
+                    }
+        
+        return {
+            "eligible": False,
+            "yesterday_minutes": yesterday_minutes,
+            "today_minutes": today_minutes
+        }
+        
+    except Exception as e:
+        logger.error(f"خطا در بررسی استرک مطالعه: {e}")
+        return None
+
+def award_streak_coupon(user_id: int, streak_id: int) -> Optional[Dict]:
+    """اعطای کوپن به کاربر برای استرک مطالعه"""
+    try:
+        # ایجاد کوپن
+        coupon = create_coupon(user_id, "study_streak")
+        
+        if not coupon:
+            return None
+        
+        # بروزرسانی استرک
+        query = """
+        UPDATE user_study_streaks
+        SET earned_coupon = TRUE, coupon_id = %s
+        WHERE streak_id = %s
+        """
+        db.execute_query(query, (coupon["coupon_id"], streak_id))
+        
+        return coupon
+        
+    except Exception as e:
+        logger.error(f"خطا در اعطای کوپن استرک: {e}")
+        return None
+def get_coupon_main_keyboard() -> ReplyKeyboardMarkup:
+    """منوی اصلی کوپن"""
+    keyboard = [
+        ["📞 تماس تلفنی", "📊 تحلیل گزارش"],
+        ["✏️ تصحیح آزمون", "📝 آزمون شخصی"],
+        ["📈 تحلیل آزمون", "🔗 برنامه شخصی"],
+        ["🎫 کوپن‌های من", "🛒 خرید کوپن"],
+        ["🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+def get_coupon_method_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد روش‌های کسب کوپن"""
+    keyboard = [
+        ["⏰ کسب از مطالعه", "💳 خرید کوپن"],
+        ["🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+def get_coupon_services_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد خدمات کوپن"""
+    keyboard = [
+        ["📞 تماس تلفنی (۱ کوپن)", "📊 تحلیل گزارش (۱ کوپن)"],
+        ["✏️ تصحیح آزمون (۱ کوپن)", "📈 تحلیل آزمون (۱ کوپن)"],
+        ["📝 آزمون شخصی (۲ کوپن)", "🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+def get_coupon_management_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد مدیریت کوپن برای کاربر"""
+    keyboard = [
+        ["🎫 کوپن‌های فعال", "📋 درخواست‌های من"],
+        ["🛒 خرید کوپن جدید", "🏠 منوی اصلی"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+def get_admin_coupon_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد مدیریت کوپن برای ادمین"""
+    keyboard = [
+        ["📋 درخواست‌های کوپن", "🏦 تغییر کارت"],
+        ["📊 آمار کوپن‌ها", "🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
 def get_start_of_week() -> str:
     """دریافت تاریخ شروع هفته (شنبه)"""
     today = datetime.now(IRAN_TZ)

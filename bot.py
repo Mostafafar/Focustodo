@@ -4095,10 +4095,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await start_study_process_text(update, context)
         return
     
-    # خدمات کوپن
-    elif text in ["📞 تماس تلفنی (۱ کوپن)", "📊 تحلیل گزارش (۱ کوپن)", 
-                  "✏️ تصحیح آزمون (۱ کوپن)", "📈 تحلیل آزمون (۱ کوپن)", 
-                  "📝 آزمون شخصی (۲ کوپن)", "🔗 برنامه شخصی"]:
+    # خدمات کوپن   
+    elif text in ["📞 تماس تلفنی", "📊 تحلیل گزارش", 
+                  "✏️ تصحیح آزمون", "📈 تحلیل آزمون", 
+                  "📝 آزمون شخصی", "🔗 برنامه شخصی"]:
         await handle_coupon_service_selection(update, context, text)
         return
     

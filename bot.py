@@ -570,7 +570,7 @@ def approve_coupon_request(request_id: int, admin_note: str = "") -> bool:
         query = """
         SELECT user_id, request_type, amount, receipt_image, status
         FROM coupon_requests
-        WHERE request_id = %s
+        WHERE request_id = %s AND status = 'pending'
         """
         
         request = db.execute_query(query, (request_id,), fetch=True)

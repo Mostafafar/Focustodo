@@ -2021,22 +2021,39 @@ async def handle_coupon_service_selection(update: Update, context: ContextTypes.
     
     # تعیین قیمت خدمت
     service_prices = {
-        "📞 تماس تلفنی (۱ کوپن)": {"price": 1, "name": "تماس تلفنی"},
-        "📊 تحلیل گزارش (۱ کوپن)": {"price": 1, "name": "تحلیل گزارش کار"},
-        "✏️ تصحیح آزمون (۱ کوپن)": {"price": 1, "name": "تصحیح آزمون تشریحی"},
-        "📈 تحلیل آزمون (۱ کوپن)": {"price": 1, "name": "تحلیل آزمون"},
-        "📝 آزمون شخصی (۲ کوپن)": {"price": 2, "name": "آزمون شخصی"}
+        "📞 تماس تلفنی": {"price": 1, "name": "تماس تلفنی"},
+        "📊 تحلیل گزارش": {"price": 1, "name": "تحلیل گزارش کار"},
+        "✏️ تصحیح آزمون": {"price": 1, "name": "تصحیح آزمون تشریحی"},
+        "📈 تحلیل آزمون": {"price": 1, "name": "تحلیل آزمون"},
+        "📝 آزمون شخصی": {"price": 2, "name": "آزمون شخصی"}
     }
+    
+    # 🔴 اصلاح: نام خدمت با کیبورد مطابقت ندارد
+    # از service که مستقیماً دریافت شده استفاده می‌کنیم
     
     if service == "🔗 برنامه شخصی":
         await handle_free_program(update, context)
         return
     
-    if service not in service_prices:
+    # 🔴 اصلاح: بررسی نام خدمت در دیکشنری
+    # برخی خدمات ممکن است پسوند قیمت داشته باشند
+    service_key = service
+    if "(" in service:
+        # اگر فرمت "خدمت (X کوپن)" بود
+        service_key = service.split("(")[0].strip()
+    
+    # اگر هنوز پیدا نشد، سعی کن با مقایسه بخشی از نام پیدا کنی
+    if service_key not in service_prices:
+        for key in service_prices:
+            if key in service_key or service_key in key:
+                service_key = key
+                break
+    
+    if service_key not in service_prices:
         await update.message.reply_text("❌ خدمت انتخاب شده نامعتبر است.")
         return
     
-    service_info = service_prices[service]
+    service_info = service_prices[service_key]
     context.user_data["selected_service"] = service_info
     
     # بررسی کوپن‌های کاربر
@@ -2091,7 +2108,7 @@ async def handle_coupon_service_selection(update: Update, context: ContextTypes.
             text,
             reply_markup=get_coupon_method_keyboard(),
             parse_mode=ParseMode.MARKDOWN
-        )
+)
 
 # -----------------------------------------------------------
 # 10. هندلر برنامه شخصی رایگان

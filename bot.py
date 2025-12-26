@@ -2792,8 +2792,24 @@ async def show_user_coupons(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     logger.info(f"🔍 نمایش کوپن‌های کاربر {user_id}")
     
     try:
-        # دریافت همه کوپن‌های کاربر
-        all_coupons = get_user_coupons(user_id)  # بدون فیلتر وضعیت
+        # ابتدا بررسی کنیم که آیا کاربر فعال است
+        if not is_user_active(user_id):
+            await update.message.reply_text(
+                "❌ حساب کاربری شما فعال نیست.\nلطفا منتظر تأیید ادمین باشید.",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return
+        
+        # دریافت کوپن‌های کاربر
+        logger.info(f"🔍 فراخوانی get_user_coupons برای کاربر {user_id}...")
+        active_coupons = get_user_coupons(user_id, "active")
+        all_coupons = get_user_coupons(user_id)  # همه کوپن‌ها
+        
+        logger.info(f"🔍 نتایج: فعال={len(active_coupons)}، کل={len(all_coupons)}")
+        
+        # نمایش لاگ برای دیباگ
+        for i, coupon in enumerate(all_coupons[:5]):
+            logger.info(f"  🎫 کوپن {i+1}: {coupon['coupon_code']} - {coupon['status']} - {coupon['value']} ریال")
         
         if not all_coupons:
             logger.info(f"📭 کاربر {user_id} هیچ کوپنی ندارد")
@@ -2805,18 +2821,11 @@ async def show_user_coupons(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             )
             return
         
-        # جدا کردن کوپن‌های فعال و استفاده‌شده
-        active_coupons = [c for c in all_coupons if c["status"] == "active"]
-        used_coupons = [c for c in all_coupons if c["status"] == "used"]
-        
-        logger.info(f"📊 آمار کوپن‌ها برای کاربر {user_id}:")
-        logger.info(f"  • کل: {len(all_coupons)}")
-        logger.info(f"  • فعال: {len(active_coupons)}")
-        logger.info(f"  • استفاده‌شده: {len(used_coupons)}")
-        
         # محاسبه مجموع ارزش
         total_value = sum(c["value"] for c in all_coupons)
+        used_coupons = [c for c in all_coupons if c["status"] == "used"]
         
+        # ساخت پیام
         text = f"""
 🎫 **کوپن‌های من**
 
@@ -2825,21 +2834,20 @@ async def show_user_coupons(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 • فعال: {len(active_coupons)}
 • استفاده‌شده: {len(used_coupons)}
 • مجموع ارزش: {total_value // 10:,} تومان
-
 """
         
         if active_coupons:
-            text += "✅ **کوپن‌های فعال شما:**\n\n"
+            text += "\n✅ **کوپن‌های فعال شما:**\n\n"
             for i, coupon in enumerate(active_coupons[:10], 1):
-                source_emoji = "⏰" if coupon["source"] == "study_streak" else "💳"
+                source_emoji = "⏰" if coupon.get("source") == "study_streak" else "💳"
                 text += f"{i}. {source_emoji} `{coupon['coupon_code']}`\n"
-                text += f"   📅 {coupon['earned_date']} | "
+                text += f"   📅 {coupon.get('earned_date', 'نامشخص')} | "
                 text += f"💰 {coupon['value'] // 10:,} تومان\n"
             
             if len(active_coupons) > 10:
                 text += f"\n📊 و {len(active_coupons)-10} کوپن دیگر...\n"
         else:
-            text += "📭 **هیچ کوپن فعالی ندارید.**\n\n"
+            text += "\n📭 **هیچ کوپن فعالی ندارید.**\n"
         
         if used_coupons:
             text += "\n📋 **کوپن‌های استفاده‌شده:**\n"
@@ -2853,6 +2861,7 @@ async def show_user_coupons(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         
         text += "\n💡 هر کوپن را می‌توانید برای هر خدمتی استفاده کنید."
         
+        # ارسال پیام
         await update.message.reply_text(
             text,
             reply_markup=get_coupon_management_keyboard(),
@@ -2865,7 +2874,7 @@ async def show_user_coupons(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         logger.error(f"❌ خطا در نمایش کوپن‌های کاربر {user_id}: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ خطا در دریافت اطلاعات کوپن‌ها.\nلطفا مجدد تلاش کنید.",
-            reply_markup=get_coupon_management_keyboard()
+            reply_markup=get_main_menu_keyboard()
         )
 
 async def show_user_requests(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:

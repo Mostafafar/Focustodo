@@ -2217,7 +2217,7 @@ async def handle_coupon_service_selection(update: Update, context: ContextTypes.
     
     # تعیین قیمت خدمت
     service_prices = {
-        "📞 تماس تلفنی": {"price": 1, "name": "تماس تلفنی"},
+        "📞 تماس تلفنی": {"price": 1, "name": "تماس تلفنی (۱۰ دقیقه)"},  # تغییر اینجا
         "📊 تحلیل گزارش": {"price": 1, "name": "تحلیل گزارش کار"},
         "✏️ تصحیح آزمون": {"price": 1, "name": "تصحیح آزمون تشریحی"},
         "📈 تحلیل آزمون": {"price": 1, "name": "تحلیل آزمون"},

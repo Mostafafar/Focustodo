@@ -2509,14 +2509,15 @@ async def handle_study_coupon_earning(update: Update, context: ContextTypes.DEFA
 
 📋 شرایط کسب کوپن:
 • ۲ روز متوالی مطالعه
-• هر روز حداقل ۶ ساعت مطالعه
+• هر روز حداقل ۶ ساعت (۳۶۰ دقیقه) مطالعه
 • جلسات معتبر (حداقل ۳۰ دقیقه)
 
 🎯 **آمار مطالعه ۲ روز اخیر شما:**
 """
     
-    if streak_info and streak_info["eligible"]:
-        text += f"""
+    if streak_info:
+        if streak_info["eligible"]:
+            text += f"""
 ✅ دیروز: {streak_info['yesterday_minutes'] // 60} ساعت و {streak_info['yesterday_minutes'] % 60} دقیقه
 ✅ امروز: {streak_info['today_minutes'] // 60} ساعت و {streak_info['today_minutes'] % 60} دقیقه
 🎯 مجموع: {streak_info['total_hours']} ساعت در ۲ روز
@@ -2525,41 +2526,49 @@ async def handle_study_coupon_earning(update: Update, context: ContextTypes.DEFA
 
 💰 **آیا می‌خواهید کوپن دریافت کنید؟**
 """
-        
-        keyboard = [
-            ["✅ دریافت کوپن"],
-            ["🔙 بازگشت"]
-        ]
-        
-        context.user_data["eligible_for_coupon"] = streak_info
-        
-    else:
-        yesterday_hours = streak_info["yesterday_minutes"] // 60 if streak_info else 0
-        yesterday_mins = streak_info["yesterday_minutes"] % 60 if streak_info else 0
-        today_hours = streak_info["today_minutes"] // 60 if streak_info else 0
-        today_mins = streak_info["today_minutes"] % 60 if streak_info else 0
-        
-        text += f"""
+            
+            keyboard = [
+                ["✅ دریافت کوپن"],
+                ["🔙 بازگشت"]
+            ]
+            
+            context.user_data["eligible_for_coupon"] = streak_info
+            
+        else:
+            yesterday_hours = streak_info["yesterday_minutes"] // 60
+            yesterday_mins = streak_info["yesterday_minutes"] % 60
+            today_hours = streak_info["today_minutes"] // 60
+            today_mins = streak_info["today_minutes"] % 60
+            
+            # نمایش اعداد واقعی
+            text += f"""
 📊 دیروز: {yesterday_hours} ساعت و {yesterday_mins} دقیقه
 📊 امروز: {today_hours} ساعت و {today_mins} دقیقه
 
 ⚠️ **برای کسب کوپن نیاز دارید:**
-• هر روز حداقل ۶ ساعت مطالعه کنید
+• هر روز حداقل ۶ ساعت (۳۶۰ دقیقه) مطالعه کنید
 • این روند را برای ۲ روز متوالی ادامه دهید
 
 💡 **نکته:** سیستم به صورت خودکار بررسی می‌کند و هنگام واجد شرایط بودن، کوپن را اعطا می‌کند.
 """
-        
-        keyboard = [
-            ["🔄 بررسی مجدد"],
-            ["🔙 بازگشت"]
-        ]
+            
+            keyboard = [
+                ["🔄 بررسی مجدد"],
+                ["🔙 بازگشت"]
+            ]
+    else:
+        text += """
+❌ **خطا در دریافت اطلاعات مطالعه**
+
+لطفا بعداً مجدد تلاش کنید.
+"""
+        keyboard = [["🔙 بازگشت"]]
     
     await update.message.reply_text(
         text,
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
         parse_mode=ParseMode.MARKDOWN
-    )
+)
 
 # -----------------------------------------------------------
 # 13. دستورات ادمین جدید

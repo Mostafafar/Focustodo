@@ -1146,7 +1146,7 @@ def create_coupon_for_user(user_id: int, study_session_id: int = None) -> Option
 def get_today_sessions(user_id: int) -> List[Dict]:
     """دریافت جلسات امروز کاربر"""
     try:
-        date_str, _ = get_iran_time()
+        date_str = datetime.now(IRAN_TZ).strftime("%Y/%m/%d")
         
         query = """
         SELECT session_id, subject, topic, minutes, 
@@ -1171,8 +1171,63 @@ def get_today_sessions(user_id: int) -> List[Dict]:
         return sessions
         
     except Exception as e:
-        logger.error(f"خطا در دریافت جلسات امروز: {e}")
+        logger.error(f"خطا در دریافت جلسات امروز: {e}", exc_info=True)
         return []
+async def check_my_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بررسی آمار مطالعه کاربر"""
+    user_id = update.effective_user.id
+    
+    try:
+        date_str = datetime.now(IRAN_TZ).strftime("%Y/%m/%d")
+        yesterday = (datetime.now(IRAN_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        # آمار امروز از daily_rankings
+        query_today = """
+        SELECT total_minutes FROM daily_rankings
+        WHERE user_id = %s AND date = %s
+        """
+        today_stats = db.execute_query(query_today, (user_id, date_str), fetch=True)
+        today_minutes = today_stats[0] if today_stats else 0
+        
+        # آمار امروز از study_sessions
+        query_sessions = """
+        SELECT COUNT(*) as sessions, COALESCE(SUM(minutes), 0) as total
+        FROM study_sessions
+        WHERE user_id = %s AND date = %s AND completed = TRUE
+        """
+        sessions_stats = db.execute_query(query_sessions, (user_id, date_str), fetch=True)
+        sessions_count = sessions_stats[0] if sessions_stats else 0
+        sessions_total = sessions_stats[1] if sessions_stats else 0
+        
+        # آمار دیروز
+        query_yesterday = """
+        SELECT total_minutes FROM daily_rankings
+        WHERE user_id = %s AND date = %s
+        """
+        yesterday_stats = db.execute_query(query_yesterday, (user_id, yesterday), fetch=True)
+        yesterday_minutes = yesterday_stats[0] if yesterday_stats else 0
+        
+        text = f"""
+🔍 **آمار مطالعه شما**
+
+📅 **امروز ({date_str}):**
+• از daily_rankings: {today_minutes} دقیقه
+• از study_sessions: {sessions_total} دقیقه ({sessions_count} جلسه)
+
+📅 **دیروز ({yesterday}):**
+• مطالعه: {yesterday_minutes} دقیقه
+
+📊 **تست سیستم کسب کوپن:**
+• دیروز: {yesterday_minutes} دقیقه (نیاز: 360+)
+• امروز: {today_minutes} دقیقه (نیاز: 360+)
+• واجد شرایط: {"✅ بله" if yesterday_minutes >= 360 and today_minutes >= 360 else "❌ خیر"}
+"""
+        
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        
+    except Exception as e:
+        logger.error(f"خطا در بررسی آمار: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
 
 def mark_encouragement_sent(user_id: int) -> bool:
     """علامت‌گذاری ارسال پیام تشویقی"""
@@ -6017,6 +6072,7 @@ def main() -> None:
         application.add_handler(MessageHandler(filters.PHOTO, handle_payment_photo))
         print("   ✓ هندلرهای متن، فایل و عکس ثبت شد")
         application.add_handler(CommandHandler("debug_all_requests", debug_all_requests_command))
+        application.add_handler(CommandHandler("check_stats", check_my_stats_command))
         
         print("\n" + "=" * 70)
         print("🤖 ربات Focus Todo آماده اجراست!")

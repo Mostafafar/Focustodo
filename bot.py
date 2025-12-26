@@ -2010,8 +2010,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
+    
     elif text == "◀️ صفحه قبل" and context.user_data.get("users_page"):
         page = context.user_data.get("users_page", 1) - 1
+        if page < 1:
+            page = 1
         context.args = [str(page)]
         await users_command(update, context)
         return

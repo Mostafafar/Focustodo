@@ -454,6 +454,7 @@ def get_coupon_by_code(coupon_code: str) -> Optional[Dict]:
         logger.error(f"خطا در دریافت کوپن: {e}")
         return None
 
+
 def use_coupon(coupon_code: str, service_type: str) -> bool:
     """استفاده از کوپن برای یک خدمت"""
     try:
@@ -467,12 +468,13 @@ def use_coupon(coupon_code: str, service_type: str) -> bool:
         
         rows_updated = db.execute_query(query, (date_str, service_type, coupon_code))
         
+        logger.info(f"🔍 استفاده از کوپن {coupon_code}: {rows_updated} ردیف به‌روزرسانی شد")
+        
         return rows_updated > 0
         
     except Exception as e:
-        logger.error(f"خطا در استفاده از کوپن: {e}")
+        logger.error(f"❌ خطا در استفاده از کوپن {coupon_code}: {e}")
         return False
-
 
 def create_coupon_request(user_id: int, request_type: str, service_type: str = None, 
                          amount: int = None, receipt_image: str = None) -> Optional[Dict]:

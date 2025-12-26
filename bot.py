@@ -4103,13 +4103,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     
     # مدیریت کوپن کاربر
-    elif text == "🎫 کوپن‌های من":
-        await show_user_coupons(update, context, user_id)
-        return
-        
-    elif text == "🛒 خرید کوپن":
+    # در تابع handle_text، بخش خرید کوپن:
+    elif text == "🛒 خرید کوپن" or text == "💳 خرید کوپن":
         await handle_coupon_purchase(update, context)
         return
+
+# و در بخش پردازش عکس فیش:
+
         
     elif text == "📋 درخواست‌های من":
         await show_user_requests(update, context, user_id)
@@ -5450,7 +5450,21 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # -----------------------------------------------------------
 # تابع اصلی
 # -----------------------------------------------------------
-
+def escape_html_for_telegram(text: str) -> str:
+    """فرار کردن کاراکترهای مخصوص برای HTML تلگرام"""
+    return html.escape(text)
+def safe_html(text: str) -> str:
+    """تبدیل ایمن متن به HTML برای تلگرام"""
+    if not text:
+        return ""
+    
+    # فرار کردن کاراکترهای HTML
+    text = html.escape(text)
+    
+    # جایگزینی اینترها با <br>
+    text = text.replace('\n', '<br>')
+    
+    return text
 def main() -> None:
     """تابع اصلی اجرای ربات"""
     application = Application.builder().token(TOKEN).build()
@@ -5523,6 +5537,9 @@ def main() -> None:
         application.add_handler(CommandHandler("verify_coupon", verify_coupon_command))
         application.add_handler(CommandHandler("coupon_stats", coupon_stats_command))
         print("   ✓ 4 دستور جدید کوپن ثبت شد")
+        
+        application.add_handler(MessageHandler(filters.PHOTO, handle_payment_photo))
+        print("   ✓ هندلرهای متن، فایل و عکس ثبت شد")
         
         print("\n" + "=" * 70)
         print("🤖 ربات Focus Todo آماده اجراست!")

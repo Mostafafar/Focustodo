@@ -3142,6 +3142,7 @@ async def send_midday_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"خطا در ارسال گزارش‌های نیم‌روز: {e}")
 
+
 async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     """ارسال گزارش شبانه ساعت 23:00"""
     try:
@@ -3160,7 +3161,7 @@ async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.info("📭 هیچ کاربر فعالی وجود ندارد")
             return
         
-        date_str = datetime.now(IRAN_TZ).strftime("%Y/%m/%d")
+        date_str, _ = get_iran_time()  # حالا فرمت YYYY-MM-DD
         time_str = "23:00"
         total_sent = 0
         
@@ -3172,27 +3173,29 @@ async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
                 continue
             
             try:
-                # دریافت جلسات امروز از جدول study_sessions
-                query_sessions = """
-                SELECT COALESCE(SUM(minutes), 0) as total_minutes,
-                       COUNT(*) as session_count
-                FROM study_sessions
-                WHERE user_id = %s AND date = %s AND completed = TRUE
-                """
-                today_result = db.execute_query(query_sessions, (user_id, date_str), fetch=True)
-                
-                if today_result:
-                    total_today, session_count = today_result
-                else:
-                    total_today, session_count = 0, 0
-                
-                # دریافت آمار امروز از daily_rankings (برای مطابقت)
+                # دریافت آمار امروز از daily_rankings (با فرمت جدید)
                 query_today = """
                 SELECT total_minutes FROM daily_rankings
                 WHERE user_id = %s AND date = %s
                 """
                 today_stats = db.execute_query(query_today, (user_id, date_str), fetch=True)
-                today_minutes = today_stats[0] if today_stats else total_today
+                today_minutes = today_stats[0] if today_stats else 0
+                
+                # همچنین از study_sessions هم چک کنیم برای اطمینان
+                query_sessions = """
+                SELECT COALESCE(SUM(minutes), 0) as total_minutes,
+                       COUNT(*) as session_count
+                FROM study_sessions
+                WHERE user_id = %s AND date LIKE %s AND completed = TRUE
+                """
+                # استفاده از LIKE برای تطابق هر دو فرمت
+                sessions_result = db.execute_query(query_sessions, (user_id, f"%{date_str[-5:]}%"), fetch=True)
+                
+                if sessions_result:
+                    sessions_total, session_count = sessions_result
+                    # اگر daily_rankings 0 بود اما sessions وجود داشت
+                    if today_minutes == 0 and sessions_total > 0:
+                        today_minutes = sessions_total
                 
                 # دریافت آمار دیروز
                 yesterday = (datetime.now(IRAN_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -3208,7 +3211,7 @@ async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
                 
                 # ساخت گزارش
                 text = f"🌙 <b>گزارش پایان روز شما</b>\n\n"
-                text += f"📅 <b>تاریخ:</b> {date_str}\n"
+                text += f"📅 <b>تاریخ:</b> {date_str.replace('-', '/')}\n"
                 text += f"🕒 <b>زمان:</b> {time_str}\n\n"
                 
                 if today_minutes > 0:
@@ -3216,19 +3219,17 @@ async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
                     query_sessions_detail = """
                     SELECT subject, topic, minutes
                     FROM study_sessions
-                    WHERE user_id = %s AND date = %s AND completed = TRUE
+                    WHERE user_id = %s AND date LIKE %s AND completed = TRUE
                     ORDER BY start_time
                     """
-                    sessions_detail = db.execute_query(query_sessions_detail, (user_id, date_str), fetchall=True)
+                    sessions_detail = db.execute_query(query_sessions_detail, (user_id, f"%{date_str[-5:]}%"), fetchall=True)
                     
                     text += f"✅ <b>خلاصه فعالیت‌های امروز:</b>\n"
                     
-                    total_today_detail = 0
                     subjects = {}
                     
                     for session in sessions_detail:
                         subject, topic, minutes = session
-                        total_today_detail += minutes
                         if subject in subjects:
                             subjects[subject] += minutes
                         else:
@@ -3240,7 +3241,7 @@ async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
                     
                     text += f"\n📊 <b>آمار کامل امروز:</b>\n"
                     text += f"⏰ مجموع مطالعه: {today_minutes} دقیقه\n"
-                    text += f"📖 تعداد جلسات: {session_count}\n"
+                    text += f"📖 تعداد جلسات: {len(sessions_detail) if sessions_detail else 0}\n"
                     
                     # مقایسه با دیروز
                     if yesterday_minutes > 0:
@@ -3306,6 +3307,72 @@ async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
         
     except Exception as e:
         logger.error(f"خطا در ارسال گزارش‌های شبانه: {e}")
+def convert_date_format(date_str: str) -> str:
+    """تبدیل تاریخ از YYYY/MM/DD به YYYY-MM-DD"""
+    if '/' in date_str:
+        return date_str.replace('/', '-')
+    return date_str
+async def debug_daily_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بررسی آمار daily_rankings"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    try:
+        date_str, _ = get_iran_time()
+        yesterday = (datetime.now(IRAN_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        query = """
+        SELECT date, user_id, total_minutes 
+        FROM daily_rankings 
+        WHERE date IN (%s, %s)
+        ORDER BY date DESC, total_minutes DESC
+        """
+        
+        results = db.execute_query(query, (date_str, yesterday), fetchall=True)
+        
+        text = f"📊 آمار daily_rankings\n\n"
+        text += f"📅 امروز ({date_str}):\n"
+        today_users = [r for r in results if r[0] == date_str]
+        
+        if today_users:
+            for row in today_users:
+                text += f"👤 {row[1]}: {row[2]} دقیقه\n"
+        else:
+            text += "📭 هیچ رکوردی\n"
+        
+        text += f"\n📅 دیروز ({yesterday}):\n"
+        yesterday_users = [r for r in results if r[0] == yesterday]
+        
+        if yesterday_users:
+            for row in yesterday_users:
+                text += f"👤 {row[1]}: {row[2]} دقیقه\n"
+        else:
+            text += "📭 هیچ رکوردی\n"
+        
+        # همچنین آمار از study_sessions
+        query_sessions = """
+        SELECT date, COUNT(*), SUM(minutes)
+        FROM study_sessions 
+        WHERE completed = TRUE AND date LIKE '2025-12-%'
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT 5
+        """
+        sessions_stats = db.execute_query(query_sessions, fetchall=True)
+        
+        text += f"\n📋 آمار جلسات ۵ روز اخیر:\n"
+        if sessions_stats:
+            for date, count, total in sessions_stats:
+                text += f"📅 {date}: {count} جلسه، {total or 0} دقیقه\n"
+        
+        await update.message.reply_text(text)
+        
+    except Exception as e:
+        logger.error(f"خطا در بررسی آمار daily_rankings: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
 
 def check_report_sent_today(user_id: int, report_type: str) -> bool:
     """بررسی آیا گزارش امروز ارسال شده است"""
@@ -6066,12 +6133,14 @@ def main() -> None:
         print("   ✓ 11 دستور اصلی ثبت شد")
         
         
+        # در تابع main() به بخش دستورات دیباگ اضافه کنید:
         print("\n🔍 ثبت دستورات دیباگ...")
         application.add_handler(CommandHandler("sessions", debug_sessions_command))
         application.add_handler(CommandHandler("debugfiles", debug_files_command))
         application.add_handler(CommandHandler("checkdb", check_database_command))
         application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
-        print("   ✓ 4 دستور دیباگ ثبت شد")
+        application.add_handler(CommandHandler("dailystats", debug_daily_stats_command))  # اضافه کردن این خط
+        print("   ✓ 5 دستور دیباگ ثبت شد")
         
         print("\n📨 ثبت هندلرهای پیام و فایل...")
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

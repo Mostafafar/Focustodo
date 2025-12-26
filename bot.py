@@ -1084,15 +1084,6 @@ def get_inactive_users_today() -> List[Dict]:
         logger.error(f"خطا در دریافت کاربران بی‌فعال: {e}")
         return []
 
-def generate_coupon_code_with_user(user_id: int) -> str:
-    """تولید کد کوپن با user_id"""
-    import random
-    import string
-    import time
-    
-    timestamp = int(time.time())
-    random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"FT{user_id:09d}{timestamp % 10000:04d}{random_str}"
 
 def create_coupon_for_user(user_id: int, study_session_id: int = None) -> Optional[Dict]:
     """ایجاد کوپن پاداش برای کاربر"""

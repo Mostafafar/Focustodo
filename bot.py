@@ -1290,12 +1290,12 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         limit = 8
         offset = (page - 1) * limit
         
-        # 🔴 تغییر مهم: ORDER BY بر اساس total_study_time به ترتیب نزولی
+        # 🔴 اصلاح شده: حذف کامنت فارسی از کوئری SQL
         query = """
         SELECT user_id, username, grade, field, is_active, 
                registration_date, total_study_time, total_sessions
         FROM users
-        WHERE is_active = TRUE  # فقط کاربران فعال
+        WHERE is_active = TRUE
         ORDER BY total_study_time DESC NULLS LAST, user_id DESC
         LIMIT %s OFFSET %s
         """

@@ -1671,7 +1671,7 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
         end_timestamp = int(time.time())
         
         query_check = """
-        SELECT user_id, subject, topic, minutes, start_time, completed 
+        SELECT user_id, subject, topic, minutes, start_time, completed, date 
         FROM study_sessions 
         WHERE session_id = %s
         """
@@ -1681,8 +1681,8 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
             logger.error(f"❌ جلسه {session_id} یافت نشد")
             return None
         
-        user_id, subject, topic, planned_minutes, start_time, completed = session_check
-        logger.info(f"🔍 اطلاعات جلسه: کاربر={user_id}, درس={subject}, تکمیل شده={completed}")
+        user_id, subject, topic, planned_minutes, start_time, completed, session_date = session_check
+        logger.info(f"🔍 اطلاعات جلسه: کاربر={user_id}, درس={subject}, تاریخ={session_date}, تکمیل شده={completed}")
         
         if completed:
             logger.warning(f"⚠️ جلسه {session_id} قبلاً تکمیل شده است")
@@ -1702,7 +1702,7 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
         UPDATE study_sessions
         SET end_time = %s, completed = TRUE, minutes = %s
         WHERE session_id = %s AND completed = FALSE
-        RETURNING user_id, subject, topic, start_time
+        RETURNING user_id, subject, topic, start_time, date
         """
         
         logger.info(f"🔍 در حال بروزرسانی جلسه به تکمیل شده...")
@@ -1712,7 +1712,7 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
             logger.error(f"❌ بروزرسانی جلسه ناموفق بود")
             return None
         
-        user_id, subject, topic, start_time = result
+        user_id, subject, topic, start_time, session_date = result
         
         try:
             query = """
@@ -1728,17 +1728,29 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
             logger.warning(f"⚠️ خطا در بروزرسانی آمار کاربر {user_id}: {e}")
         
         try:
-            date_str, _ = get_iran_time()
+            # تاریخ امروز با فرمت جدید
+            date_str, time_str = get_iran_time()  # حالا فرمت YYYY-MM-DD برمی‌گرداند
+            
+            # مطمئن شویم از تاریخ جلسه استفاده می‌کنیم نه تاریخ امروز
+            # اگر session_date در فرمت قدیمی است، تبدیل کن
+            if '/' in session_date:
+                # تبدیل از YYYY/MM/DD به YYYY-MM-DD
+                session_date_formatted = session_date.replace('/', '-')
+            else:
+                session_date_formatted = session_date
+                
+            logger.info(f"📅 بروزرسانی daily_rankings برای تاریخ: {session_date_formatted}")
+            
             query = """
             INSERT INTO daily_rankings (user_id, date, total_minutes)
             VALUES (%s, %s, %s)
             ON CONFLICT (user_id, date) DO UPDATE SET
                 total_minutes = daily_rankings.total_minutes + EXCLUDED.total_minutes
             """
-            db.execute_query(query, (user_id, date_str, final_minutes))
+            db.execute_query(query, (user_id, session_date_formatted, final_minutes))
             logger.info(f"✅ رتبه‌بندی روزانه برای کاربر {user_id} بروزرسانی شد")
         except Exception as e:
-            logger.warning(f"⚠️ خطا در بروزرسانی رتبه‌بندی: {e}")
+            logger.warning(f"⚠️ خطا در بروزرسانی رتبه‌بندی: {e}", exc_info=True)
         
         session_data = {
             "user_id": user_id,
@@ -1749,7 +1761,8 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
             "actual_seconds": actual_seconds,
             "start_time": start_time,
             "end_time": end_timestamp,
-            "session_id": session_id
+            "session_id": session_id,
+            "date": session_date
         }
         
         logger.info(f"✅ جلسه مطالعه تکمیل شد: {session_id} - زمان: {final_minutes} دقیقه")
@@ -1758,7 +1771,6 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"❌ خطا در تکمیل جلسه مطالعه: {e}", exc_info=True)
         return None
-
 def get_user_sessions(user_id: int, limit: int = 10) -> List[Dict]:
     """دریافت جلسات اخیر کاربر"""
     try:

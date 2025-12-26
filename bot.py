@@ -4139,38 +4139,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # توابع زمان‌بندی شده
 # -----------------------------------------------------------
 
-async def auto_complete_study(context) -> None:
-    """اتمام خودکار جلسه مطالعه بعد از اتمام زمان"""
-    job_data = context.job.data
-    session_id = job_data["session_id"]
-    chat_id = job_data["chat_id"]
-    user_id = job_data["user_id"]
-    
-    session = complete_study_session(session_id)
-    
-    if session:
-        date_str, time_str = get_iran_time()
-        score = calculate_score(session["minutes"])
-        
-        await context.bot.send_message(
-            chat_id,
-            f"⏰ **زمان به پایان رسید!**\n\n"
-            f"✅ مطالعه به صورت خودکار ثبت شد.\n\n"
-            f"📚 درس: {session['subject']}\n"
-            f"🎯 مبحث: {session['topic']}\n"
-            f"⏰ مدت: {format_time(session['minutes'])}\n"
-            f"🏆 امتیاز: +{score}\n"
-            f"📅 تاریخ: {date_str}\n"
-            f"🕒 زمان: {time_str}\n\n"
-            f"🎉 آفرین! یک جلسه مفید داشتید.",
-            reply_markup=get_main_menu_keyboard()
-        )
-    else:
-        await context.bot.send_message(
-            chat_id,
-            "❌ خطا در ثبت خودکار جلسه.",
-            reply_markup=get_main_menu_keyboard()
-        )
 
 # -----------------------------------------------------------
 # تابع اصلی
@@ -4180,12 +4148,38 @@ def main() -> None:
     """تابع اصلی اجرای ربات"""
     application = Application.builder().token(TOKEN).build()
     
+    # Job زمان‌بندی شده برای گزارش‌ها
     application.job_queue.run_daily(
-        send_daily_top_ranks,
-        time=dt_time(hour=0, minute=0, second=0, tzinfo=IRAN_TZ),
+        send_midday_report,
+        time=dt_time(hour=15, minute=0, second=0, tzinfo=IRAN_TZ),  # 15:00
         days=(0, 1, 2, 3, 4, 5, 6),
-        name="daily_top_ranks"
+        name="midday_report"
     )
+    
+    application.job_queue.run_daily(
+        send_night_report,
+        time=dt_time(hour=23, minute=0, second=0, tzinfo=IRAN_TZ),  # 23:00
+        days=(0, 1, 2, 3, 4, 5, 6),
+        name="night_report"
+    )
+    
+    # Job برای پیام‌های تشویقی رندوم (هر روز ساعت 14:00)
+    application.job_queue.run_daily(
+        send_random_encouragement,
+        time=dt_time(hour=14, minute=0, second=0, tzinfo=IRAN_TZ),  # 14:00
+        days=(0, 1, 2, 3, 4, 5, 6),
+        name="random_encouragement"
+    )
+    
+    # همچنین یک Job تکرارشونده برای ارسال رندوم در طول روز
+    application.job_queue.run_repeating(
+        send_random_encouragement,
+        interval=21600,  # هر 6 ساعت
+        first=10,
+        name="periodic_encouragement"
+    )
+    
+    # ... بقیه کدهای main() بدون تغییر ...
     
     try:
         print("\n📝 ثبت هندلرهای دستورات...")

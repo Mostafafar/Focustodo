@@ -2234,6 +2234,7 @@ async def handle_study_coupon_earning(update: Update, context: ContextTypes.DEFA
 # 13. دستورات ادمین جدید
 # -----------------------------------------------------------
 
+
 async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور تغییر شماره کارت ادمین"""
     user_id = update.effective_user.id
@@ -2246,19 +2247,19 @@ async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         current_card = get_admin_card_info()
         
         text = f"""
-🏦 **شماره کارت فعلی:**
+🏦 <b>شماره کارت فعلی:</b>
 
-📋 اطلاعات کارت:
-• شماره: `{current_card['card_number']}`
+📋 <b>اطلاعات کارت:</b>
+• شماره: <code>{current_card['card_number']}</code>
 • صاحب حساب: {current_card['card_owner']}
 
-📝 **برای تغییر، از فرمت زیر استفاده کنید:**
-`/set_card <شماره_کارت> <نام_صاحب_کارت>`
+📝 <b>برای تغییر، از فرمت زیر استفاده کنید:</b>
+<code>/set_card &lt;شماره_کارت&gt; &lt;نام_صاحب_کارت&gt;</code>
 
 مثال:
-`/set_card ۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸ علی_محمدی`
+<code>/set_card ۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸ علی_محمدی</code>
 """
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
         return
     
     card_number = context.args[0]
@@ -2268,17 +2269,17 @@ async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         date_str, time_str = get_iran_time()
         
         text = f"""
-✅ **شماره کارت ذخیره شد!**
+✅ <b>شماره کارت ذخیره شد!</b>
 
-🏦 اطلاعات جدید:
-• شماره کارت: `{card_number}`
+🏦 <b>اطلاعات جدید:</b>
+• شماره کارت: <code>{card_number}</code>
 • صاحب حساب: {card_owner}
 • تاریخ تغییر: {date_str}
 • زمان: {time_str}
 
 📌 این شماره کارت از این پس برای خرید کوپن نمایش داده می‌شود.
 """
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
         
         # اطلاع به همه ادمین‌ها
         for admin_id in ADMIN_IDS:
@@ -2286,12 +2287,12 @@ async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 try:
                     await context.bot.send_message(
                         admin_id,
-                        f"🏦 **شماره کارت تغییر کرد**\n\n"
+                        f"🏦 <b>شماره کارت تغییر کرد</b>\n\n"
                         f"توسط: {update.effective_user.full_name}\n"
-                        f"شماره جدید: `{card_number}`\n"
+                        f"شماره جدید: <code>{card_number}</code>\n"
                         f"صاحب حساب: {card_owner}\n"
                         f"زمان: {time_str}",
-                        parse_mode=ParseMode.MARKDOWN
+                        parse_mode=ParseMode.HTML
                     )
                 except Exception as e:
                     logger.error(f"خطا در اطلاع به ادمین {admin_id}: {e}")

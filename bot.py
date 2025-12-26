@@ -2007,7 +2007,7 @@ async def coupon_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         "🎫 **سیستم کوپن‌ها**\n\n"
         "هر کوپن معادل ۴۰,۰۰۰ تومان ارزش دارد\n\n"
         "📋 خدمات قابل خرید با کوپن:",
-        reply_markup=get_coupon_services_keyboard(),
+        reply_markup=get_coupon_main_keyboard(),
         parse_mode=ParseMode.MARKDOWN
     )
 

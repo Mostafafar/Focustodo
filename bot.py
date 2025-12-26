@@ -1988,6 +1988,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     elif text == "📊 آمار ربات":
         await admin_show_stats(update, context)
         return
+    # در تابع handle_text، به بخش ادمین منو اضافه کنید:
+    elif text == "👤 لیست کاربران":
+        await users_command(update, context)
+        return
+    
+    elif text == "📩 ارسال پیام":
+        await update.message.reply_text(
+            "📩 ارسال پیام مستقیم\n\n"
+            "برای ارسال پیام از دستور زیر استفاده کنید:\n"
+            "/send <آیدی_کاربر> <پیام>\n\n"
+            "مثال:\n"
+            "/send 6680287530 سلام! آزمون فردا لغو شد.\n\n"
+            "📌 آیدی کاربر را از لیست کاربران (/users) دریافت کنید."
+        )
+        return
+    
+    elif text == "◀️ صفحه قبل" and context.user_data.get("users_page"):
+        page = context.user_data.get("users_page", 1) - 1
+        context.args = [str(page)]
+        await users_command(update, context)
+        return
+    
+    elif text == "▶️ صفحه بعد" and context.user_data.get("users_page"):
+        page = context.user_data.get("users_page", 1) + 1
+        context.args = [str(page)]
+        await users_command(update, context)
+        return
     
     # اتمام مطالعه
     elif text == "✅ اتمام مطالعه":
@@ -3336,7 +3363,10 @@ def main() -> None:
         application.add_handler(CommandHandler("userinfo", userinfo_command))
         application.add_handler(CommandHandler("broadcast", broadcast_command))
         application.add_handler(CommandHandler("sendtop", sendtop_command))
-        print("   ✓ 9 دستور اصلی ثبت شد")
+        application.add_handler(CommandHandler("users", users_command))
+        application.add_handler(CommandHandler("send", send_command))
+        print("   ✓ 11 دستور اصلی ثبت شد")
+        
         
         print("\n🔍 ثبت دستورات دیباگ...")
         application.add_handler(CommandHandler("sessions", debug_sessions_command))

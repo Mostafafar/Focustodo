@@ -836,14 +836,17 @@ def initialize_default_settings():
 # 4. توابع جدید برای سیستم کسب خودکار کوپن
 # -----------------------------------------------------------
 
+
 def check_study_streak(user_id: int) -> Optional[Dict]:
     """بررسی استرک مطالعه کاربر برای کسب کوپن"""
     try:
         today = datetime.now(IRAN_TZ)
-        today_str = today.strftime("%Y-%m-%d")
+        today_str = today.strftime("%Y-%m-%d")  # فرمت: 2025-12-26
         yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         
-        # دریافت آمار مطالعه از daily_rankings (مطمئن‌ترین منبع)
+        logger.info(f"🔍 بررسی استرک - تاریخ امروز واقعی: {today_str}")
+        
+        # دریافت آمار مطالعه از daily_rankings
         query_yesterday = """
         SELECT total_minutes FROM daily_rankings
         WHERE user_id = %s AND date = %s

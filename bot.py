@@ -449,6 +449,7 @@ def create_coupon_request(user_id: int, request_type: str, service_type: str = N
     try:
         logger.info(f"🔍 ایجاد درخواست کوپن برای کاربر {user_id}")
         logger.info(f"📋 نوع: {request_type}, خدمت: {service_type}, مبلغ: {amount}")
+        logger.info(f"🔍 رکورد جدید در جدول: {result}")  # لاگ result بعد از INSERT
         
         query = """
         INSERT INTO coupon_requests (user_id, request_type, service_type, amount, receipt_image, status)

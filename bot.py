@@ -1273,6 +1273,86 @@ async def notify_admin_new_user(context: ContextTypes.DEFAULT_TYPE, user: Any) -
                 
     except Exception as e:
         logger.error(f"خطا در اطلاع‌رسانی به ادمین‌ها: {e}")
+async def deactive_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """غیرفعال‌سازی کاربر توسط ادمین"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ فرمت صحیح:\n"
+            "/deactive <آیدی_کاربر>\n\n"
+            "مثال:\n"
+            "/deactive 123456789\n\n"
+            "📌 آیدی کاربر را می‌توانید از لیست کاربران (/users) دریافت کنید."
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        
+        # بررسی وجود کاربر
+        query = "SELECT username, is_active FROM users WHERE user_id = %s"
+        user_check = db.execute_query(query, (target_user_id,), fetch=True)
+        
+        if not user_check:
+            await update.message.reply_text(f"❌ کاربر با آیدی `{target_user_id}` یافت نشد.")
+            return
+        
+        username, is_currently_active = user_check
+        
+        # اگر کاربر قبلاً غیرفعال است
+        if not is_currently_active:
+            await update.message.reply_text(
+                f"⚠️ کاربر `{target_user_id}` از قبل غیرفعال است.\n"
+                f"👤 نام: {username or 'نامشخص'}"
+            )
+            return
+        
+        # غیرفعال‌سازی
+        query = """
+        UPDATE users
+        SET is_active = FALSE
+        WHERE user_id = %s
+        """
+        rows_updated = db.execute_query(query, (target_user_id,))
+        
+        if rows_updated > 0:
+            date_str, time_str = get_iran_time()
+            
+            # اطلاع به کاربر (اگر امکان داشت)
+            try:
+                await context.bot.send_message(
+                    target_user_id,
+                    "🚫 **حساب کاربری شما غیرفعال شد!**\n\n"
+                    "❌ شما دیگر نمی‌توانید از ربات استفاده کنید.\n"
+                    "📞 برای فعال‌سازی مجدد با پشتیبانی تماس بگیرید."
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ خطا در اطلاع به کاربر {target_user_id}: {e}")
+            
+            await update.message.reply_text(
+                f"✅ کاربر غیرفعال شد!\n\n"
+                f"🆔 آیدی: `{target_user_id}`\n"
+                f"👤 نام: {username or 'نامشخص'}\n"
+                f"📅 تاریخ: {date_str}\n"
+                f"🕒 زمان: {time_str}\n\n"
+                f"🔔 به کاربر اطلاع داده شد (در صورت امکان).",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+            logger.info(f"کاربر غیرفعال شد: {username} ({target_user_id}) توسط ادمین {user_id}")
+        else:
+            await update.message.reply_text(f"❌ خطا در غیرفعال‌سازی کاربر.")
+            
+    except ValueError:
+        await update.message.reply_text("❌ آیدی باید عددی باشد.")
+    except Exception as e:
+        logger.error(f"خطا در غیرفعال‌سازی کاربر: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

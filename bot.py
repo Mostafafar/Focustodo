@@ -336,28 +336,57 @@ def create_coupon(user_id: int, source: str, receipt_image: str = None) -> Optio
         date_str, time_str = get_iran_time()
         coupon_code = generate_coupon_code()
         
+        logger.info(f"🔍 در حال ایجاد کوپن برای کاربر {user_id}")
+        logger.info(f"🎫 کد کوپن: {coupon_code}")
+        logger.info(f"🏷️ منبع: {source}")
+        logger.info(f"📅 تاریخ: {date_str}")
+        logger.info(f"📸 فیش: {receipt_image}")
+        
         query = """
         INSERT INTO coupons (user_id, coupon_code, coupon_source, value, earned_date, 
                            purchase_receipt, status, verified_by_admin)
         VALUES (%s, %s, %s, %s, %s, %s, 'active', TRUE)
-        RETURNING coupon_id, coupon_code, earned_date
+        RETURNING coupon_id, coupon_code, earned_date, value
         """
         
+        logger.info(f"🔍 اجرای کوئری INSERT برای کوپن...")
         result = db.execute_query(query, (user_id, coupon_code, source, 400000, date_str, receipt_image), fetch=True)
         
         if result:
-            return {
+            coupon_data = {
                 "coupon_id": result[0],
                 "coupon_code": result[1],
                 "earned_date": result[2],
-                "value": 400000,
+                "value": result[3] if len(result) > 3 else 400000,
                 "source": source
             }
+            
+            logger.info(f"✅ کوپن ایجاد شد: {coupon_data}")
+            
+            # 🔍 تأیید ذخیره‌سازی
+            query_check = """
+            SELECT coupon_id, coupon_code, value, status 
+            FROM coupons 
+            WHERE coupon_id = %s
+            """
+            check_result = db.execute_query(query_check, (result[0],), fetch=True)
+            
+            if check_result:
+                logger.info(f"✅ تأیید ذخیره‌سازی کوپن در دیتابیس:")
+                logger.info(f"   🆔 ID: {check_result[0]}")
+                logger.info(f"   🎫 کد: {check_result[1]}")
+                logger.info(f"   💰 ارزش: {check_result[2]}")
+                logger.info(f"   ✅ وضعیت: {check_result[3]}")
+            else:
+                logger.error(f"❌ کوپن در دیتابیس یافت نشد!")
+            
+            return coupon_data
         
+        logger.error("❌ هیچ نتیجه‌ای از INSERT کوپن برگشت داده نشد")
         return None
         
     except Exception as e:
-        logger.error(f"خطا در ایجاد کوپن: {e}")
+        logger.error(f"❌ خطا در ایجاد کوپن: {e}", exc_info=True)
         return None
 
 def get_user_coupons(user_id: int, status: str = "active") -> List[Dict]:

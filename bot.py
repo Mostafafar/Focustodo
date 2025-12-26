@@ -200,7 +200,49 @@ class Database:
                 admin_note TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """,
+            # در بخش ایجاد جداول دیتابیس (class Database - create_tables):
             """
+            CREATE TABLE IF NOT EXISTS weekly_rankings (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                week_start_date VARCHAR(50),
+                total_minutes INTEGER DEFAULT 0,
+                rank INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, week_start_date)
+           )
+           """,
+           """
+           CREATE TABLE IF NOT EXISTS reward_coupons (
+               coupon_id SERIAL PRIMARY KEY,
+               user_id BIGINT REFERENCES users(user_id),
+               coupon_code VARCHAR(50) UNIQUE,
+               value INTEGER DEFAULT 20000,
+               status VARCHAR(20) DEFAULT 'pending',
+               study_session_id INTEGER,
+               created_date VARCHAR(50),
+               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+               expires_at VARCHAR(50),
+               used_at TIMESTAMP
+          )
+          """,
+          """
+          CREATE TABLE IF NOT EXISTS user_activities (
+              activity_id SERIAL PRIMARY KEY,
+              user_id BIGINT REFERENCES users(user_id),
+              date VARCHAR(50),
+              total_study_minutes INTEGER DEFAULT 0,
+              sessions_count INTEGER DEFAULT 0,
+              received_encouragement BOOLEAN DEFAULT FALSE,
+              received_midday_report BOOLEAN DEFAULT FALSE,
+              received_night_report BOOLEAN DEFAULT FALSE,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(user_id, date)
+         )
+         """
+            
+            
         ]
         
         for query in queries:
@@ -217,6 +259,262 @@ db = Database()
 # -----------------------------------------------------------
 # توابع کمکی
 # -----------------------------------------------------------
+def get_start_of_week() -> str:
+    """دریافت تاریخ شروع هفته (شنبه)"""
+    today = datetime.now(IRAN_TZ)
+    # در Python دوشنبه=0، یکشنبه=6. برای شنبه (آغاز هفته ایرانی) 5 روز کم می‌کنیم
+    start_of_week = today - timedelta(days=(today.weekday() + 2) % 7)
+    return start_of_week.strftime("%Y-%m-%d")
+
+def get_weekly_rankings(limit: int = 50) -> List[Dict]:
+    """دریافت رتبه‌بندی هفتگی"""
+    try:
+        week_start = get_start_of_week()
+        
+        query = """
+        SELECT u.user_id, u.username, u.grade, u.field, 
+               COALESCE(SUM(dr.total_minutes), 0) as weekly_total
+        FROM users u
+        LEFT JOIN daily_rankings dr ON u.user_id = dr.user_id AND dr.date >= %s
+        WHERE u.is_active = TRUE
+        GROUP BY u.user_id, u.username, u.grade, u.field
+        ORDER BY weekly_total DESC
+        LIMIT %s
+        """
+        
+        results = db.execute_query(query, (week_start, limit), fetchall=True)
+        
+        rankings = []
+        for row in results:
+            rankings.append({
+                "user_id": row[0],
+                "username": row[1],
+                "grade": row[2],
+                "field": row[3],
+                "total_minutes": row[4] or 0
+            })
+        
+        # به‌روزرسانی رتبه در دیتابیس
+        for i, rank in enumerate(rankings, 1):
+            query = """
+            INSERT INTO weekly_rankings (user_id, week_start_date, total_minutes, rank)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (user_id, week_start_date) DO UPDATE SET
+                total_minutes = EXCLUDED.total_minutes,
+                rank = EXCLUDED.rank
+            """
+            db.execute_query(query, (rank["user_id"], week_start, rank["total_minutes"], i))
+        
+        return rankings
+        
+    except Exception as e:
+        logger.error(f"خطا در دریافت رتبه‌بندی هفتگی: {e}")
+        return []
+
+def get_user_weekly_rank(user_id: int) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """دریافت رتبه، زمان و فاصله با نفرات برتر هفتگی"""
+    try:
+        week_start = get_start_of_week()
+        
+        # دریافت رتبه‌بندی کامل هفتگی
+        rankings = get_weekly_rankings(limit=100)
+        
+        # یافتن کاربر در رتبه‌بندی
+        user_rank = None
+        user_minutes = 0
+        
+        for i, rank in enumerate(rankings, 1):
+            if rank["user_id"] == user_id:
+                user_rank = i
+                user_minutes = rank["total_minutes"]
+                break
+        
+        if not user_rank:
+            # اگر کاربر در رتبه‌بندی نیست
+            query = """
+            SELECT COALESCE(SUM(total_minutes), 0)
+            FROM daily_rankings
+            WHERE user_id = %s AND date >= %s
+            """
+            result = db.execute_query(query, (user_id, week_start), fetch=True)
+            user_minutes = result[0] if result else 0
+            
+            # محاسبه رتبه تخمینی
+            query = """
+            SELECT COUNT(DISTINCT user_id) + 1
+            FROM daily_rankings
+            WHERE date >= %s 
+            AND COALESCE(SUM(total_minutes), 0) > %s
+            GROUP BY user_id
+            """
+            result = db.execute_query(query, (week_start, user_minutes), fetch=True)
+            user_rank = result[0] if result else len(rankings) + 1
+        
+        # محاسبه فاصله با نفر پنجم
+        gap_minutes = 0
+        if user_rank > 5 and len(rankings) >= 5:
+            fifth_minutes = rankings[4]["total_minutes"]  # ایندکس 4 = نفر پنجم
+            gap_minutes = fifth_minutes - user_minutes
+            gap_minutes = max(0, gap_minutes)
+        
+        return user_rank, user_minutes, gap_minutes
+        
+    except Exception as e:
+        logger.error(f"خطا در محاسبه رتبه هفتگی: {e}")
+        return None, 0, 0
+
+def get_inactive_users_today() -> List[Dict]:
+    """دریافت کاربرانی که امروز مطالعه نکرده‌اند"""
+    try:
+        date_str, _ = get_iran_time()
+        
+        query = """
+        SELECT u.user_id, u.username, u.grade, u.field
+        FROM users u
+        LEFT JOIN daily_rankings dr ON u.user_id = dr.user_id AND dr.date = %s
+        WHERE u.is_active = TRUE 
+        AND (dr.user_id IS NULL OR dr.total_minutes = 0)
+        AND u.user_id NOT IN (
+            SELECT user_id FROM user_activities 
+            WHERE date = %s AND received_encouragement = TRUE
+        )
+        ORDER BY RANDOM()
+        LIMIT 50
+        """
+        
+        results = db.execute_query(query, (date_str, date_str), fetchall=True)
+        
+        users = []
+        for row in results:
+            users.append({
+                "user_id": row[0],
+                "username": row[1],
+                "grade": row[2],
+                "field": row[3]
+            })
+        
+        return users
+        
+    except Exception as e:
+        logger.error(f"خطا در دریافت کاربران بی‌فعال: {e}")
+        return []
+
+def generate_coupon_code(user_id: int) -> str:
+    """تولید کد کوپن یکتا"""
+    import random
+    import string
+    
+    timestamp = int(time.time())
+    random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return f"FT{user_id:09d}{timestamp % 10000:04d}{random_str}"
+
+def create_coupon_for_user(user_id: int, study_session_id: int = None) -> Optional[Dict]:
+    """ایجاد کوپن پاداش برای کاربر"""
+    try:
+        date_str, _ = get_iran_time()
+        
+        # تاریخ انقضا (۷ روز بعد)
+        expires_date = (datetime.now(IRAN_TZ) + timedelta(days=7)).strftime("%Y-%m-%d")
+        
+        coupon_code = generate_coupon_code(user_id)
+        
+        query = """
+        INSERT INTO reward_coupons (user_id, coupon_code, value, study_session_id, created_date, expires_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING coupon_id, coupon_code, created_date
+        """
+        
+        result = db.execute_query(query, (user_id, coupon_code, 20000, study_session_id, date_str, expires_date), fetch=True)
+        
+        if result:
+            return {
+                "coupon_id": result[0],
+                "coupon_code": result[1],
+                "created_date": result[2],
+                "value": 20000
+            }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"خطا در ایجاد کوپن: {e}")
+        return None
+
+def get_today_sessions(user_id: int) -> List[Dict]:
+    """دریافت جلسات امروز کاربر"""
+    try:
+        date_str, _ = get_iran_time()
+        
+        query = """
+        SELECT session_id, subject, topic, minutes, 
+               TO_TIMESTAMP(start_time) as start_time
+        FROM study_sessions
+        WHERE user_id = %s AND date = %s AND completed = TRUE
+        ORDER BY start_time
+        """
+        
+        results = db.execute_query(query, (user_id, date_str), fetchall=True)
+        
+        sessions = []
+        for row in results:
+            sessions.append({
+                "session_id": row[0],
+                "subject": row[1],
+                "topic": row[2],
+                "minutes": row[3],
+                "start_time": row[4]
+            })
+        
+        return sessions
+        
+    except Exception as e:
+        logger.error(f"خطا در دریافت جلسات امروز: {e}")
+        return []
+
+def mark_encouragement_sent(user_id: int) -> bool:
+    """علامت‌گذاری ارسال پیام تشویقی"""
+    try:
+        date_str, _ = get_iran_time()
+        
+        query = """
+        INSERT INTO user_activities (user_id, date, received_encouragement)
+        VALUES (%s, %s, TRUE)
+        ON CONFLICT (user_id, date) DO UPDATE SET
+            received_encouragement = TRUE
+        """
+        
+        db.execute_query(query, (user_id, date_str))
+        return True
+        
+    except Exception as e:
+        logger.error(f"خطا در علامت‌گذاری پیام تشویقی: {e}")
+        return False
+
+def mark_report_sent(user_id: int, report_type: str) -> bool:
+    """علامت‌گذاری ارسال گزارش (midday/night)"""
+    try:
+        date_str, _ = get_iran_time()
+        
+        if report_type == "midday":
+            field = "received_midday_report"
+        elif report_type == "night":
+            field = "received_night_report"
+        else:
+            return False
+        
+        query = f"""
+        INSERT INTO user_activities (user_id, date, {field})
+        VALUES (%s, %s, TRUE)
+        ON CONFLICT (user_id, date) DO UPDATE SET
+            {field} = TRUE
+        """
+        
+        db.execute_query(query, (user_id, date_str))
+        return True
+        
+    except Exception as e:
+        logger.error(f"خطا در علامت‌گذاری گزارش: {e}")
+        return False
 def get_grade_keyboard() -> ReplyKeyboardMarkup:
     """کیبورد انتخاب پایه تحصیلی"""
     keyboard = [
@@ -1190,7 +1488,395 @@ def get_complete_study_keyboard() -> ReplyKeyboardMarkup:
 # هندلرهای دستورات
 # -----------------------------------------------------------
 
+async def send_midday_report(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال گزارش نیم‌روز ساعت 15:00"""
+    try:
+        logger.info("🕒 شروع ارسال گزارش‌های نیم‌روز...")
+        
+        # دریافت کاربران فعال
+        query = """
+        SELECT user_id, username, grade, field
+        FROM users
+        WHERE is_active = TRUE
+        """
+        
+        results = db.execute_query(query, fetchall=True)
+        
+        if not results:
+            logger.info("📭 هیچ کاربر فعالی وجود ندارد")
+            return
+        
+        date_str, time_str = get_iran_time()
+        total_sent = 0
+        
+        for row in results:
+            user_id, username, grade, field = row
+            
+            # بررسی آیا قبلاً گزارش ارسال شده
+            if check_report_sent_today(user_id, "midday"):
+                continue
+            
+            try:
+                # دریافت جلسات امروز
+                today_sessions = get_today_sessions(user_id)
+                
+                # دریافت رتبه هفتگی
+                weekly_rank, weekly_minutes, gap_minutes = get_user_weekly_rank(user_id)
+                
+                # دریافت 5 نفر برتر هفتگی
+                top_weekly = get_weekly_rankings(limit=5)
+                
+                # ساخت گزارش
+                text = f"📊 <b>گزارش نیم‌روز شما</b>\n\n"
+                text += f"📅 <b>تاریخ:</b> {date_str}\n"
+                text += f"🕒 <b>زمان:</b> {time_str}\n\n"
+                
+                if today_sessions:
+                    text += f"✅ <b>فعالیت‌های امروز:</b>\n"
+                    for i, session in enumerate(today_sessions, 1):
+                        start_time = session["start_time"]
+                        if isinstance(start_time, datetime):
+                            session_time = start_time.strftime("%H:%M")
+                        else:
+                            session_time = "??:??"
+                        
+                        text += f"• {session_time} | {session['subject']} ({session['topic'][:30]}) | {session['minutes']} دقیقه\n"
+                    
+                    total_today = sum(s["minutes"] for s in today_sessions)
+                    text += f"\n📈 <b>آمار امروز:</b>\n"
+                    text += f"⏰ مجموع: {total_today} دقیقه\n"
+                    text += f"📖 جلسات: {len(today_sessions)} جلسه\n"
+                else:
+                    text += f"📭 <b>هیچ فعالیتی امروز ثبت نکرده‌اید.</b>\n\n"
+                    text += f"🔥 <i>هنوز فرصت داری! همین الان یک جلسه شروع کن!</i>\n\n"
+                
+                text += f"\n🏆 <b>۵ نفر برتر هفتگی:</b>\n"
+                for i, rank in enumerate(top_weekly[:5], 1):
+                    medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i-1]
+                    
+                    # دریافت نام کاربر
+                    user_display = rank["username"] or "کاربر"
+                    if user_display == "None":
+                        user_display = "کاربر"
+                    
+                    hours = rank["total_minutes"] // 60
+                    mins = rank["total_minutes"] % 60
+                    
+                    if hours > 0 and mins > 0:
+                        time_display = f"{hours}h {mins}m"
+                    elif hours > 0:
+                        time_display = f"{hours}h"
+                    else:
+                        time_display = f"{mins}m"
+                    
+                    text += f"{medal} {user_display} ({rank['grade']} {rank['field']}): {time_display}\n"
+                
+                if weekly_rank:
+                    text += f"\n📊 <b>موقعیت شما در هفته:</b>\n"
+                    text += f"🎯 شما در رتبه <b>{weekly_rank}</b> جدول هفتگی هستید\n"
+                    
+                    if gap_minutes > 0 and weekly_rank > 5:
+                        text += f"⏳ <b>{gap_minutes} دقیقه</b> تا ۵ نفر اول فاصله دارید\n"
+                    
+                    text += f"⏰ مطالعه هفتگی شما: {weekly_minutes} دقیقه\n"
+                
+                text += f"\n💪 <i>ادامه بده! فردا می‌تونی جزو برترها باشی!</i>"
+                
+                # ارسال گزارش
+                await context.bot.send_message(
+                    user_id,
+                    text,
+                    parse_mode=ParseMode.HTML
+                )
+                
+                # علامت‌گذاری ارسال شده
+                mark_report_sent(user_id, "midday")
+                total_sent += 1
+                
+                await asyncio.sleep(0.1)  # تأخیر برای جلوگیری از محدودیت
+                
+            except Exception as e:
+                logger.error(f"خطا در ارسال گزارش به کاربر {user_id}: {e}")
+                continue
+        
+        logger.info(f"✅ گزارش نیم‌روز به {total_sent} کاربر ارسال شد")
+        
+    except Exception as e:
+        logger.error(f"خطا در ارسال گزارش‌های نیم‌روز: {e}")
 
+async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال گزارش شبانه ساعت 23:00"""
+    try:
+        logger.info("🌙 شروع ارسال گزارش‌های شبانه...")
+        
+        # دریافت کاربران فعال
+        query = """
+        SELECT user_id, username, grade, field
+        FROM users
+        WHERE is_active = TRUE
+        """
+        
+        results = db.execute_query(query, fetchall=True)
+        
+        if not results:
+            logger.info("📭 هیچ کاربر فعالی وجود ندارد")
+            return
+        
+        date_str, time_str = get_iran_time()
+        total_sent = 0
+        
+        for row in results:
+            user_id, username, grade, field = row
+            
+            # بررسی آیا قبلاً گزارش ارسال شده
+            if check_report_sent_today(user_id, "night"):
+                continue
+            
+            try:
+                # دریافت جلسات امروز
+                today_sessions = get_today_sessions(user_id)
+                
+                # دریافت آمار امروز از daily_rankings
+                query_today = """
+                SELECT total_minutes FROM daily_rankings
+                WHERE user_id = %s AND date = %s
+                """
+                today_stats = db.execute_query(query_today, (user_id, date_str), fetch=True)
+                today_minutes = today_stats[0] if today_stats else 0
+                
+                # دریافت آمار دیروز
+                yesterday = (datetime.now(IRAN_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+                query_yesterday = """
+                SELECT total_minutes FROM daily_rankings
+                WHERE user_id = %s AND date = %s
+                """
+                yesterday_stats = db.execute_query(query_yesterday, (user_id, yesterday), fetch=True)
+                yesterday_minutes = yesterday_stats[0] if yesterday_stats else 0
+                
+                # دریافت رتبه هفتگی
+                weekly_rank, weekly_minutes, gap_minutes = get_user_weekly_rank(user_id)
+                
+                # ساخت گزارش
+                text = f"🌙 <b>گزارش پایان روز شما</b>\n\n"
+                text += f"📅 <b>تاریخ:</b> {date_str}\n"
+                text += f"🕒 <b>زمان:</b> {time_str}\n\n"
+                
+                if today_sessions:
+                    text += f"✅ <b>خلاصه فعالیت‌های امروز:</b>\n"
+                    
+                    total_today = 0
+                    subjects = {}
+                    
+                    for session in today_sessions:
+                        total_today += session["minutes"]
+                        subject = session["subject"]
+                        if subject in subjects:
+                            subjects[subject] += session["minutes"]
+                        else:
+                            subjects[subject] = session["minutes"]
+                    
+                    # نمایش دروس
+                    for subject, minutes in subjects.items():
+                        text += f"• {subject}: {minutes} دقیقه\n"
+                    
+                    text += f"\n📊 <b>آمار کامل امروز:</b>\n"
+                    text += f"⏰ مجموع مطالعه: {total_today} دقیقه\n"
+                    text += f"📖 تعداد جلسات: {len(today_sessions)}\n"
+                    
+                    # مقایسه با دیروز
+                    if yesterday_minutes > 0:
+                        difference = total_today - yesterday_minutes
+                        if difference > 0:
+                            text += f"📈 نسبت به دیروز: +{difference} دقیقه بهبود 🎉\n"
+                        elif difference < 0:
+                            text += f"📉 نسبت به دیروز: {abs(difference)} دقیقه کاهش 😔\n"
+                        else:
+                            text += f"📊 نسبت به دیروز: بدون تغییر\n"
+                    else:
+                        text += f"🎯 اولین روز مطالعه! آفرین! 🎉\n"
+                    
+                    # دریافت رتبه امروز
+                    query_rank_today = """
+                    SELECT COUNT(*) + 1 FROM daily_rankings
+                    WHERE date = %s AND total_minutes > %s
+                    """
+                    rank_today = db.execute_query(query_rank_today, (date_str, today_minutes), fetch=True)
+                    if rank_today:
+                        text += f"🏅 رتبه امروز: {rank_today[0]}\n"
+                
+                else:
+                    text += f"📭 <b>امروز هیچ مطالعه‌ای ثبت نکردید.</b>\n\n"
+                    text += f"😔 نگران نباش! فردا یک روز جدید است!\n\n"
+                
+                # اطلاعات هفتگی
+                if weekly_rank:
+                    text += f"\n📅 <b>آمار هفتگی:</b>\n"
+                    text += f"🎯 رتبه هفتگی: {weekly_rank}\n"
+                    text += f"⏰ مطالعه هفتگی: {weekly_minutes} دقیقه\n"
+                    
+                    if gap_minutes > 0 and weekly_rank > 5:
+                        text += f"🎯 {gap_minutes} دقیقه تا ۵ نفر اول فاصله دارید\n"
+                
+                text += f"\n💡 <b>هدف فردا:</b>\n"
+                if today_minutes > 0:
+                    target = today_minutes + 30  # 30 دقیقه بیشتر از امروز
+                    text += f"🎯 حداقل {target} دقیقه مطالعه\n"
+                else:
+                    text += f"🎯 حداقل 60 دقیقه مطالعه\n"
+                
+                text += f"\n🌙 شب بخیر و فردایی پرانرژی! ✨"
+                
+                # ارسال گزارش
+                await context.bot.send_message(
+                    user_id,
+                    text,
+                    parse_mode=ParseMode.HTML
+                )
+                
+                # علامت‌گذاری ارسال شده
+                mark_report_sent(user_id, "night")
+                total_sent += 1
+                
+                await asyncio.sleep(0.1)  # تأخیر برای جلوگیری از محدودیت
+                
+            except Exception as e:
+                logger.error(f"خطا در ارسال گزارش شبانه به کاربر {user_id}: {e}")
+                continue
+        
+        logger.info(f"✅ گزارش شبانه به {total_sent} کاربر ارسال شد")
+        
+    except Exception as e:
+        logger.error(f"خطا در ارسال گزارش‌های شبانه: {e}")
+
+def check_report_sent_today(user_id: int, report_type: str) -> bool:
+    """بررسی آیا گزارش امروز ارسال شده است"""
+    try:
+        date_str, _ = get_iran_time()
+        
+        if report_type == "midday":
+            field = "received_midday_report"
+        elif report_type == "night":
+            field = "received_night_report"
+        else:
+            return True  # اگر نوع ناشناخته، ارسال نکن
+        
+        query = f"""
+        SELECT {field} FROM user_activities
+        WHERE user_id = %s AND date = %s
+        """
+        
+        result = db.execute_query(query, (user_id, date_str), fetch=True)
+        
+        if result and result[0]:
+            return True
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"خطا در بررسی گزارش ارسال شده: {e}")
+        return False  # اگر خطا، ارسال کن
+async def send_random_encouragement(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال پیام تشویقی رندوم به کاربران بی‌فعال"""
+    try:
+        logger.info("🎁 شروع ارسال پیام‌های تشویقی...")
+        
+        # دریافت کاربران بی‌فعال امروز
+        inactive_users = get_inactive_users_today()
+        
+        if not inactive_users:
+            logger.info("📭 هیچ کاربر بی‌فعالی وجود ندارد")
+            return
+        
+        # انتخاب حداکثر 20 کاربر به صورت رندوم
+        import random
+        selected_users = random.sample(inactive_users, min(20, len(inactive_users)))
+        
+        total_sent = 0
+        
+        for user in selected_users:
+            try:
+                # ساخت پیام تشویقی
+                encouragement_messages = [
+                    "🎁 <b>فرصت ویژه!</b>\n\nسلام! می‌دونم امروز هنوز مطالعه‌ای ثبت نکردی...\n\n⏰ اگه همین الان یک جلسه مطالعه ثبت کنی:\n✅ <b>نیم کوپن به ارزش ۲۰,۰۰۰ تومان میگیری!</b>\n🎯 شانس برنده شدن در قرعه‌کشی هفتگی بیشتر می‌شه\n📈 رتبه‌ت در جدول هفتگی بهبود پیدا می‌کنه\n\n🔥 <b>همین الان دکمه «➕ ثبت مطالعه» رو بزن!</b>\n\n⏳ این پیشنهاد فقط امروز معتبره!",
+                    
+                    "🔥 <b>آخرین فرصت امروز!</b>\n\nهنوز امروز رو به پایان نرسوندی! یه فرصت طلایی داری:\n\n💰 <b>ثبت مطالعه = دریافت ۲۰,۰۰۰ تومان تخفیف!</b>\n\n⏰ فقط کافیه یک جلسه ۳۰ دقیقه‌ای شروع کنی و:\n✅ کوپن تخفیف ۲۰,۰۰۰ تومانی دریافت کنی\n✅ در قرعه‌کشی هفتگی شرکت کنی\n✅ رتبه‌ت رو در جدول هفتگی بالا ببری\n\n🎯 <b>همین الان شروع کن!</b>",
+                    
+                    "💎 <b>پیشنهاد محدود!</b>\n\nامروز رو بدون مطالعه نگذار بگذره! این فرصت رو از دست نده:\n\n🎁 <b>هر مطالعه امروز = نیم کوپن ۲۰,۰۰۰ تومانی</b>\n\n📊 آمار کاربرانی که امروز مطالعه کردن:\n• ۷۵٪ بیشتر از ۶۰ دقیقه مطالعه کردن\n• ۴۰٪ جایگاهشون در جدول هفتگی بهتر شده\n• ۲۵٪ برنده جوایز هفتگی شدن\n\n🏆 <b>تو هم می‌تونی یکی از برندگان باشی!</b>"
+                ]
+                
+                message = random.choice(encouragement_messages)
+                
+                # ارسال پیام
+                await context.bot.send_message(
+                    user["user_id"],
+                    message,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=get_main_menu_keyboard()
+                )
+                
+                # علامت‌گذاری ارسال شده
+                mark_encouragement_sent(user["user_id"])
+                total_sent += 1
+                
+                await asyncio.sleep(0.15)  # تأخیر بیشتر برای جلوگیری از محدودیت
+                
+            except Exception as e:
+                logger.error(f"خطا در ارسال پیام تشویقی به کاربر {user['user_id']}: {e}")
+                continue
+        
+        logger.info(f"🎁 پیام تشویقی به {total_sent} کاربر ارسال شد")
+        
+    except Exception as e:
+        logger.error(f"خطا در ارسال پیام‌های تشویقی: {e}")
+
+async def check_and_reward_user(user_id: int, session_id: int, context: ContextTypes.DEFAULT_TYPE = None) -> None:
+    """بررسی و اعطای پاداش به کاربر بعد از ثبت مطالعه"""
+    try:
+        date_str, _ = get_iran_time()
+        
+        # بررسی آیا کاربر امروز پیام تشویقی دریافت کرده
+        query = """
+        SELECT received_encouragement FROM user_activities
+        WHERE user_id = %s AND date = %s
+        """
+        result = db.execute_query(query, (user_id, date_str), fetch=True)
+        
+        received_encouragement = result[0] if result else False
+        
+        if received_encouragement:
+            # ایجاد کوپن پاداش
+            coupon = create_coupon_for_user(user_id, session_id)
+            
+            if coupon:
+                # ارسال پیام تبریک
+                if context:
+                    try:
+                        await context.bot.send_message(
+                            user_id,
+                            f"🎉 <b>تبریک! جایزه شما دریافت شد!</b>\n\n"
+                            f"✅ شما برای ثبت مطالعه بعد از دریافت پیام تشویقی، پاداش گرفتید!\n\n"
+                            f"🎁 <b>کوپن تخفیف:</b> <code>{coupon['coupon_code']}</code>\n"
+                            f"💰 <b>مبلغ:</b> ۲۰,۰۰۰ تومان\n"
+                            f"📅 <b>تاریخ ایجاد:</b> {coupon['created_date']}\n"
+                            f"⏳ <b>انقضا:</b> ۷ روز\n\n"
+                            f"💡 <i>این کوپن را در خریدهای بعدی خود استفاده کنید.</i>",
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception as e:
+                        logger.error(f"خطا در اطلاع پاداش به کاربر {user_id}: {e}")
+                
+                logger.info(f"🎁 پاداش به کاربر {user_id} داده شد: {coupon['coupon_code']}")
+                
+                # به‌روزرسانی فعالیت کاربر
+                query = """
+                UPDATE user_activities
+                SET received_encouragement = FALSE
+                WHERE user_id = %s AND date = %s
+                """
+                db.execute_query(query, (user_id, date_str))
+        
+    except Exception as e:
+        logger.error(f"خطا در بررسی و اعطای پاداش: {e}")
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دستور /start"""
     user = update.effective_user
@@ -2679,6 +3365,10 @@ async def complete_study_button(update: Update, context: ContextTypes.DEFAULT_TY
         )
         
         context.user_data["last_subject"] = session['subject']
+        
+        # 🔴 اضافه شده: بررسی و اعطای پاداش
+        await check_and_reward_user(user_id, session_id, context)
+        
     else:
         await update.message.reply_text(
             "❌ خطا در ثبت اطلاعات.",
@@ -2687,6 +3377,43 @@ async def complete_study_button(update: Update, context: ContextTypes.DEFAULT_TY
     
     context.user_data.pop("current_session", None)
 
+async def auto_complete_study(context) -> None:
+    """اتمام خودکار جلسه مطالعه بعد از اتمام زمان"""
+    job_data = context.job.data
+    session_id = job_data["session_id"]
+    chat_id = job_data["chat_id"]
+    user_id = job_data["user_id"]
+    
+    session = complete_study_session(session_id)
+    
+    if session:
+        date_str, time_str = get_iran_time()
+        score = calculate_score(session["minutes"])
+        
+        await context.bot.send_message(
+            chat_id,
+            f"⏰ <b>زمان به پایان رسید!</b>\n\n"
+            f"✅ مطالعه به صورت خودکار ثبت شد.\n\n"
+            f"📚 درس: {session['subject']}\n"
+            f"🎯 مبحث: {session['topic']}\n"
+            f"⏰ مدت: {format_time(session['minutes'])}\n"
+            f"🏆 امتیاز: +{score}\n"
+            f"📅 تاریخ: {date_str}\n"
+            f"🕒 زمان: {time_str}\n\n"
+            f"🎉 آفرین! یک جلسه مفید داشتید.",
+            reply_markup=get_main_menu_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        
+        # 🔴 اضافه شده: بررسی و اعطای پاداش
+        await check_and_reward_user(user_id, session_id, context)
+        
+    else:
+        await context.bot.send_message(
+            chat_id,
+            "❌ خطا در ثبت خودکار جلسه.",
+            reply_markup=get_main_menu_keyboard()
+            )
 # -----------------------------------------------------------
 # توابع ثبت‌نام
 # -----------------------------------------------------------

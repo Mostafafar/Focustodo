@@ -2141,7 +2141,7 @@ async def handle_coupon_purchase(update: Update, context: ContextTypes.DEFAULT_T
 
 🏦 <b>لطفا مبلغ را به شماره کارت زیر واریز کنید:</b>
 <code>{card_info['card_number']}</code>
-به نام: {card_info['card_owner']}
+به نام: {escape_html_for_telegram(card_info['card_owner'])}
 
 📸 <b>پس از واریز، عکس فیش پرداختی را ارسال کنید.</b>
 
@@ -2162,6 +2162,122 @@ async def handle_coupon_purchase(update: Update, context: ContextTypes.DEFAULT_T
         parse_mode=ParseMode.HTML
     )
 
+# -----------------------------------------------------------
+# 3. اضافه کردن تابع هندلر عکس فیش
+# -----------------------------------------------------------
+async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """پردازش عکس فیش پرداختی"""
+    user_id = update.effective_user.id
+    
+    # بررسی آیا کاربر در انتظار ارسال فیش است
+    if not context.user_data.get("awaiting_payment_receipt"):
+        await update.message.reply_text(
+            "❌ شما در حال خرید کوپن نیستید.\n"
+            "لطفا از منوی کوپن استفاده کنید."
+        )
+        return
+    
+    # بررسی وجود عکس
+    if not update.message.photo:
+        await update.message.reply_text(
+            "❌ لطفا یک عکس از فیش پرداختی ارسال کنید.",
+            reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True)
+        )
+        return
+    
+    # دریافت عکس با کیفیت مناسب
+    photo = update.message.photo[-1]  # آخرین عکس با بیشترین کیفیت
+    file_id = photo.file_id
+    
+    # دریافت اطلاعات کاربر
+    user_info = get_user_info(user_id)
+    username = user_info["username"] if user_info else "نامشخص"
+    user_full_name = update.effective_user.full_name or "نامشخص"
+    
+    # ایجاد درخواست خرید کوپن
+    request_data = create_coupon_request(
+        user_id=user_id,
+        request_type="purchase",
+        amount=400000,
+        receipt_image=file_id  # ذخیره file_id برای نمایش به ادمین
+    )
+    
+    if not request_data:
+        await update.message.reply_text(
+            "❌ خطا در ثبت درخواست. لطفا مجدد تلاش کنید.",
+            reply_markup=get_coupon_main_keyboard()
+        )
+        return
+    
+    date_str, time_str = get_iran_time()
+    
+    # اطلاع به کاربر
+    await update.message.reply_text(
+        f"✅ <b>عکس فیش دریافت شد!</b>\n\n"
+        f"📋 <b>اطلاعات درخواست:</b>\n"
+        f"• شماره درخواست: #{request_data['request_id']}\n"
+        f"• مبلغ: ۴۰,۰۰۰ تومان\n"
+        f"• تاریخ: {date_str}\n"
+        f"• زمان: {time_str}\n\n"
+        f"⏳ درخواست شما برای بررسی به ادمین ارسال شد.\n"
+        f"پس از تأیید، کوپن به حساب شما اضافه می‌شود.",
+        reply_markup=get_coupon_main_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+    
+    # پاک کردن وضعیت انتظار
+    context.user_data.pop("awaiting_payment_receipt", None)
+    context.user_data.pop("selected_service", None)
+    context.user_data.pop("awaiting_purchase_method", None)
+    
+    # ارسال خودکار به همه ادمین‌ها
+    for admin_id in ADMIN_IDS:
+        try:
+            # ارسال عکس به ادمین
+            caption = f"""
+🏦 <b>درخواست خرید کوپن جدید</b>
+
+📋 <b>اطلاعات درخواست:</b>
+• شماره درخواست: #{request_data['request_id']}
+• کاربر: {escape_html_for_telegram(user_full_name)}
+• آیدی: <code>{user_id}</code>
+• نام کاربری: @{username or 'ندارد'}
+• مبلغ: ۴۰,۰۰۰ تومان
+• تاریخ: {date_str}
+• زمان: {time_str}
+
+📝 برای تأیید دستور زیر را وارد کنید:
+<code>/verify_coupon {request_data['request_id']}</code>
+
+🔍 برای مشاهده درخواست‌ها:
+/coupon_requests
+"""
+            
+            await context.bot.send_photo(
+                chat_id=admin_id,
+                photo=file_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML
+            )
+            
+        except Exception as e:
+            logger.error(f"خطا در ارسال به ادمین {admin_id}: {e}")
+    
+    logger.info(f"درخواست خرید کوپن ثبت شد: کاربر {user_id} - درخواست #{request_data['request_id']}")
+async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, text: str) -> None:
+    """پردازش متن ارسال شده به جای عکس فیش"""
+    if text == "🔙 بازگشت":
+        context.user_data.pop("awaiting_payment_receipt", None)
+        await coupon_menu_handler(update, context)
+        return
+    
+    # اگر کاربر متن ارسال کرد، راهنمایی به ارسال عکس
+    await update.message.reply_text(
+        "❌ لطفا عکس فیش پرداختی را ارسال کنید.\n\n"
+        "📸 باید از روی فیش بانکی یا رسید پرداخت عکس بگیرید و ارسال کنید.\n\n"
+        "⚠️ ارسال متن پذیرفته نیست.",
+        reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True)
+    )
 # -----------------------------------------------------------
 # 12. هندلر کسب کوپن از مطالعه
 # -----------------------------------------------------------

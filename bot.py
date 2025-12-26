@@ -840,18 +840,19 @@ def initialize_default_settings():
 def check_study_streak(user_id: int) -> Optional[Dict]:
     """بررسی استرک مطالعه کاربر برای کسب کوپن"""
     try:
-        today = datetime.now(IRAN_TZ)
-        today_str = today.strftime("%Y-%m-%d")  # فرمت: 2025-12-26
-        yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        now = datetime.now(IRAN_TZ)
+        today_str = now.strftime("%Y-%m-%d")  # فرمت: 2025-12-26
+        yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         
-        logger.info(f"🔍 بررسی استرک - تاریخ امروز واقعی: {today_str}")
+        logger.info(f"🔍 بررسی استرک - تاریخ امروز: {today_str}")
+        logger.info(f"🔍 بررسی استرک - تاریخ دیروز: {yesterday_str}")
         
         # دریافت آمار مطالعه از daily_rankings
         query_yesterday = """
         SELECT total_minutes FROM daily_rankings
         WHERE user_id = %s AND date = %s
         """
-        yesterday_result = db.execute_query(query_yesterday, (user_id, yesterday), fetch=True)
+        yesterday_result = db.execute_query(query_yesterday, (user_id, yesterday_str), fetch=True)
         yesterday_minutes = yesterday_result[0] if yesterday_result else 0
         
         query_today = """
@@ -862,7 +863,7 @@ def check_study_streak(user_id: int) -> Optional[Dict]:
         today_minutes = today_result[0] if today_result else 0
         
         logger.info(f"🔍 بررسی استرک برای کاربر {user_id}:")
-        logger.info(f"  دیروز ({yesterday}): {yesterday_minutes} دقیقه")
+        logger.info(f"  دیروز ({yesterday_str}): {yesterday_minutes} دقیقه")
         logger.info(f"  امروز ({today_str}): {today_minutes} دقیقه")
         
         # شرط کسب کوپن: هر روز حداقل ۶ ساعت (۳۶۰ دقیقه)
@@ -885,7 +886,7 @@ def check_study_streak(user_id: int) -> Optional[Dict]:
                 
                 total_hours = (yesterday_minutes + today_minutes) // 60
                 streak_result = db.execute_query(query_streak, 
-                    (user_id, yesterday, today_str, total_hours, 2), fetch=True)
+                    (user_id, yesterday_str, today_str, total_hours, 2), fetch=True)
                 
                 if streak_result:
                     streak_id = streak_result[0]

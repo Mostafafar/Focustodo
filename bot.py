@@ -1302,9 +1302,11 @@ def get_cancel_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
 def get_iran_time() -> Tuple[str, str]:
-    """دریافت تاریخ و زمان ایران"""
+    """دریافت تاریخ و زمان ایران - فقط تاریخ شمسی"""
     now = datetime.now(IRAN_TZ)
-    date_str = now.strftime("%Y-%m-%d")  # تغییر: از / به - برای استانداردسازی
+    # تاریخ شمسی (فقط سال/ماه/روز)
+    date_str = now.strftime("%Y/%m/%d")
+    # زمان
     time_str = now.strftime("%H:%M")
     return date_str, time_str
 

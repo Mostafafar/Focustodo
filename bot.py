@@ -1236,16 +1236,20 @@ async def check_my_stats_command(update: Update, context: ContextTypes.DEFAULT_T
 def mark_encouragement_sent(user_id: int) -> bool:
     """علامت‌گذاری ارسال پیام تشویقی"""
     try:
-        date_str, _ = get_iran_time()
+        now = datetime.now(IRAN_TZ)
+        date_str = now.strftime("%Y-%m-%d")  # تاریخ امروز
+        time_str = now.strftime("%H:%M:%S")  # زمان دقیق
         
+        # 🔴 اضافه کردن created_at با زمان دقیق
         query = """
-        INSERT INTO user_activities (user_id, date, received_encouragement)
-        VALUES (%s, %s, TRUE)
+        INSERT INTO user_activities (user_id, date, received_encouragement, created_at)
+        VALUES (%s, %s, TRUE, %s)
         ON CONFLICT (user_id, date) DO UPDATE SET
-            received_encouragement = TRUE
+            received_encouragement = TRUE,
+            created_at = EXCLUDED.created_at
         """
         
-        db.execute_query(query, (user_id, date_str))
+        db.execute_query(query, (user_id, date_str, now))
         return True
         
     except Exception as e:

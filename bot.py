@@ -3463,22 +3463,29 @@ async def send_random_encouragement(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"خطا در ارسال پیام‌های تشویقی: {e}")
 
 async def check_and_reward_user(user_id: int, session_id: int, context: ContextTypes.DEFAULT_TYPE = None) -> None:
-    """بررسی و اعطای پاداش به کاربر بعد از ثبت مطالعه"""
+    """بررسی و اعطای پاداش نیم‌کوپن - فرصت ۲۴ ساعته"""
     try:
-        date_str, _ = get_iran_time()
+        now = datetime.now(IRAN_TZ)
         
-        # بررسی آیا کاربر امروز پیام تشویقی دریافت کرده
+        # بررسی آیا در ۲۴ ساعت گذشته پیام تشویقی دریافت کرده
+        # 🔴 تغییر: بررسی بازه ۲۴ ساعت گذشته
         query = """
-        SELECT received_encouragement FROM user_activities
-        WHERE user_id = %s AND date = %s
+        SELECT MIN(date) as first_encouragement_date 
+        FROM user_activities 
+        WHERE user_id = %s 
+        AND received_encouragement = TRUE
+        AND created_at >= %s
         """
-        result = db.execute_query(query, (user_id, date_str), fetch=True)
         
-        received_encouragement = result[0] if result else False
+        # تاریخ ۲۴ ساعت پیش
+        twenty_four_hours_ago = now - timedelta(hours=24)
+        check_time = twenty_four_hours_ago.strftime("%Y-%m-%d %H:%M:%S")
         
-        if received_encouragement:
-            # ایجاد کوپن پاداش
-            coupon = create_coupon_for_user(user_id, session_id)
+        result = db.execute_query(query, (user_id, check_time), fetch=True)
+        
+        if result and result[0]:  # اگر در ۲۴ ساعت گذشته پیام تشویقی گرفته
+            # ایجاد نیم‌کوپن پاداش
+            coupon = create_half_coupon(user_id, "encouragement_reward")
             
             if coupon:
                 # ارسال پیام تبریک
@@ -3486,27 +3493,33 @@ async def check_and_reward_user(user_id: int, session_id: int, context: ContextT
                     try:
                         await context.bot.send_message(
                             user_id,
-                            f"🎉 <b>تبریک! جایزه شما دریافت شد!</b>\n\n"
-                            f"✅ شما برای ثبت مطالعه بعد از دریافت پیام تشویقی، پاداش گرفتید!\n\n"
-                            f"🎁 <b>کوپن تخفیف:</b> <code>{coupon['coupon_code']}</code>\n"
+                            f"🎉 <b>پاداش ۲۴ ساعته دریافت شد!</b>\n\n"
+                            f"✅ شما برای ثبت مطالعه در عرض ۲۴ ساعت بعد از دریافت پیام تشویقی، پاداش گرفتید!\n\n"
+                            f"⏳ <b>فرصت:</b> ۲۴ ساعت از لحظه دریافت پیام\n"
+                            f"🎁 <b>نیم‌کوپن:</b> <code>{coupon['coupon_code']}</code>\n"
                             f"💰 <b>مبلغ:</b> ۲۰,۰۰۰ تومان\n"
-                            f"📅 <b>تاریخ ایجاد:</b> {coupon['created_date']}\n"
-                            f"⏳ <b>انقضا:</b> ۷ روز\n\n"
-                            f"💡 <i>این کوپن را در خریدهای بعدی خود استفاده کنید.</i>",
+                            f"📅 <b>تاریخ ایجاد:</b> {coupon['earned_date']}\n\n"
+                            f"💡 <b>نکته مهم:</b>\n"
+                            f"• این یک <b>نیم‌کوپن</b> است\n"
+                            f"• نیاز به ۲ نیم‌کوپن برای یک خدمت کامل دارید\n"
+                            f"• می‌توانید آن را با نیم‌کوپن دیگر ترکیب کنید\n\n"
+                            f"🔄 <b>برای ترکیب:</b>\n"
+                            f"دستور: /combine_coupons کد۱ کد۲\n\n"
+                            f"✅ نیم‌کوپن‌های شما: /my_coupons",
                             parse_mode=ParseMode.HTML
                         )
                     except Exception as e:
                         logger.error(f"خطا در اطلاع پاداش به کاربر {user_id}: {e}")
                 
-                logger.info(f"🎁 پاداش به کاربر {user_id} داده شد: {coupon['coupon_code']}")
+                logger.info(f"🎁 نیم‌کوپن به کاربر {user_id} داده شد: {coupon['coupon_code']}")
                 
-                # به‌روزرسانی فعالیت کاربر
-                query = """
+                # پاک کردن تمام پیام‌های تشویقی قبلی کاربر
+                cleanup_query = """
                 UPDATE user_activities
                 SET received_encouragement = FALSE
-                WHERE user_id = %s AND date = %s
+                WHERE user_id = %s
                 """
-                db.execute_query(query, (user_id, date_str))
+                db.execute_query(cleanup_query, (user_id,))
         
     except Exception as e:
         logger.error(f"خطا در بررسی و اعطای پاداش: {e}")

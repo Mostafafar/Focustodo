@@ -3412,6 +3412,216 @@ def check_report_sent_today(user_id: int, report_type: str) -> bool:
     except Exception as e:
         logger.error(f"خطا در بررسی گزارش ارسال شده: {e}")
         return False  # اگر خطا، ارسال کن
+def create_half_coupon(user_id: int, source: str = "encouragement") -> Optional[Dict]:
+    """ایجاد کوپن ۲۰,۰۰۰ تومانی (نیم‌کوپن)"""
+    try:
+        date_str, time_str = get_iran_time()
+        coupon_code = generate_coupon_code(user_id)
+        
+        query = """
+        INSERT INTO coupons (user_id, coupon_code, coupon_source, value, 
+                           earned_date, status, verified_by_admin, is_half_coupon)
+        VALUES (%s, %s, %s, %s, %s, 'active', TRUE, TRUE)
+        RETURNING coupon_id, coupon_code, earned_date, value
+        """
+        
+        result = db.execute_query(query, 
+            (user_id, coupon_code, source, 20000, date_str), fetch=True)
+        
+        if result:
+            return {
+                "coupon_id": result[0],
+                "coupon_code": result[1],
+                "earned_date": result[2],
+                "value": result[3] if len(result) > 3 else 20000,
+                "is_half_coupon": True,
+                "source": source
+            }
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ خطا در ایجاد نیم‌کوپن: {e}")
+        return None
+def combine_half_coupons(user_id: int, coupon_code1: str, coupon_code2: str) -> Optional[str]:
+    """ترکیب دو نیم‌کوپن برای ساخت یک کوپن کامل"""
+    conn = None
+    cursor = None
+    
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # بررسی کوپن‌ها
+        cursor.execute("""
+        SELECT coupon_id, coupon_code, status, is_half_coupon, user_id
+        FROM coupons 
+        WHERE coupon_code IN (%s, %s) AND status = 'active'
+        """, (coupon_code1, coupon_code2))
+        
+        coupons = cursor.fetchall()
+        
+        if len(coupons) != 2:
+            logger.error(f"❌ کوپن‌ها معتبر نیستند")
+            return None
+        
+        # بررسی مالکیت و نوع کوپن‌ها
+        for coupon in coupons:
+            if coupon[4] != user_id:
+                logger.error(f"❌ کوپن {coupon[1]} متعلق به کاربر نیست")
+                return None
+            if not coupon[3]:  # اگر نیم‌کوپن نباشد
+                logger.error(f"❌ کوپن {coupon[1]} نیم‌کوپن نیست")
+                return None
+        
+        # ایجاد کوپن کامل جدید
+        date_str, time_str = get_iran_time()
+        full_coupon_code = generate_coupon_code(user_id)
+        
+        cursor.execute("""
+        INSERT INTO coupons (user_id, coupon_code, coupon_source, value, 
+                           earned_date, status, verified_by_admin, is_half_coupon)
+        VALUES (%s, %s, %s, %s, %s, 'active', TRUE, FALSE)
+        RETURNING coupon_id
+        """, (user_id, full_coupon_code, "combined", 40000, date_str))
+        
+        full_coupon_id = cursor.fetchone()[0]
+        
+        # غیرفعال کردن نیم‌کوپن‌ها و ثبت رابطه
+        for coupon in coupons:
+            cursor.execute("""
+            UPDATE coupons 
+            SET status = 'combined', 
+                parent_coupon_id = %s,
+                used_date = %s
+            WHERE coupon_id = %s
+            """, (full_coupon_id, date_str, coupon[0]))
+        
+        conn.commit()
+        logger.info(f"✅ نیم‌کوپن‌ها ترکیب شدند: {coupon_code1} + {coupon_code2} = {full_coupon_code}")
+        
+        return full_coupon_code
+        
+    except Exception as e:
+        logger.error(f"❌ خطا در ترکیب نیم‌کوپن‌ها: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return None
+        
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            db.return_connection(conn)
+async def combine_coupons_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ترکیب دو نیم‌کوپن"""
+    user_id = update.effective_user.id
+    
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "🔄 <b>ترکیب نیم‌کوپن‌ها</b>\n\n"
+            "📋 فرمت صحیح:\n"
+            "<code>/combine_coupons کد_نیم‌کوپن_اول کد_نیم‌کوپن_دوم</code>\n\n"
+            "مثال:\n"
+            "<code>/combine_coupons FT123ABC FT456DEF</code>\n\n"
+            "💡 هر نیم‌کوپن: ۲۰,۰۰۰ تومان\n"
+            "✅ پس از ترکیب: ۱ کوپن کامل ۴۰,۰۰۰ تومانی",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    coupon_code1 = context.args[0].upper()
+    coupon_code2 = context.args[1].upper()
+    
+    full_coupon = combine_half_coupons(user_id, coupon_code1, coupon_code2)
+    
+    if full_coupon:
+        await update.message.reply_text(
+            f"✅ <b>ترکیب موفق!</b>\n\n"
+            f"🎫 <b>کوپن کامل جدید:</b> <code>{full_coupon}</code>\n"
+            f"💰 <b>ارزش:</b> ۴۰,۰۰۰ تومان\n\n"
+            f"🎯 اکنون می‌توانید از این کوپن برای خدمات مختلف استفاده کنید!",
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await update.message.reply_text(
+            "❌ <b>ترکیب ناموفق!</b>\n\n"
+            "ممکن است:\n"
+            "• کوپن‌ها معتبر نباشند\n"
+            "• قبلاً استفاده شده‌اند\n"
+            "• متعلق به شما نیستند\n"
+            "• نیم‌کوپن نیستند",
+            parse_mode=ParseMode.HTML
+        )
+async def my_coupons_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش کوپن‌های کاربر با تفکیک نوع"""
+    user_id = update.effective_user.id
+    
+    try:
+        # دریافت همه کوپن‌های کاربر
+        query = """
+        SELECT coupon_code, coupon_source, value, status, 
+               earned_date, used_date, used_for, is_half_coupon
+        FROM coupons
+        WHERE user_id = %s
+        ORDER BY earned_date DESC
+        """
+        
+        results = db.execute_query(query, (user_id,), fetchall=True)
+        
+        if not results:
+            await update.message.reply_text(
+                "📭 شما هیچ کوپنی ندارید.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        
+        half_coupons = []
+        full_coupons = []
+        
+        for row in results:
+            coupon_data = {
+                "code": row[0],
+                "source": row[1],
+                "value": row[2],
+                "status": row[3],
+                "earned_date": row[4],
+                "used_date": row[5],
+                "used_for": row[6],
+                "is_half": row[7]
+            }
+            
+            if row[7]:  # is_half_coupon
+                half_coupons.append(coupon_data)
+            else:
+                full_coupons.append(coupon_data)
+        
+        # ساخت پیام
+        text = "🎫 <b>کوپن‌های شما</b>\n\n"
+        
+        if half_coupons:
+            text += "🟡 <b>نیم‌کوپن‌ها (۲۰,۰۰۰ تومان):</b>\n"
+            for i, coupon in enumerate(half_coupons[:5], 1):
+                if coupon["status"] == "active":
+                    text += f"{i}. <code>{coupon['code']}</code> - {coupon['earned_date']}\n"
+            
+            if len(half_coupons) >= 2:
+                text += f"\n🔄 <b>شما {len(half_coupons)} نیم‌کوپن دارید!</b>\n"
+                text += f"می‌توانید ۲ تا را ترکیب کنید:\n"
+                text += f"<code>/combine_coupons {half_coupons[0]['code']} {half_coupons[1]['code']}</code>\n"
+        
+        if full_coupons:
+            text += "\n🟢 <b>کوپن‌های کامل (۴۰,۰۰۰ تومان):</b>\n"
+            for i, coupon in enumerate(full_coupons[:5], 1):
+                status_emoji = "✅" if coupon["status"] == "active" else "📝"
+                text += f"{i}. {status_emoji} <code>{coupon['code']}</code> - {coupon['earned_date']}\n"
+                if coupon["status"] == "used":
+                    text += f"   📍 استفاده شده برای: {coupon['used_for'] or 'نامشخص'}\n"
+        
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        
+    except Exception as e:
+        logger.error(f"خطا در نمایش کوپن‌ها: {e}")
+        await update.message.reply_text("❌ خطا در دریافت اطلاعات کوپن‌ها.")
 async def send_random_encouragement(context: ContextTypes.DEFAULT_TYPE) -> None:
     """ارسال پیام تشویقی رندوم به کاربران بی‌فعال"""
     try:
@@ -6182,6 +6392,11 @@ def main() -> None:
         print("   ✓ هندلرهای متن، فایل و عکس ثبت شد")
         application.add_handler(CommandHandler("debug_all_requests", debug_all_requests_command))
         application.add_handler(CommandHandler("check_stats", check_my_stats_command))
+        # در تابع main() به بخش دستورات اضافه کنید:
+        print("\n🎫 ثبت دستورات نیم‌کوپن...")
+        application.add_handler(CommandHandler("combine_coupons", combine_coupons_command))
+        application.add_handler(CommandHandler("my_coupons", my_coupons_command))
+        print("   ✓ 2 دستور نیم‌کوپن ثبت شد")
         
         print("\n" + "=" * 70)
         print("🤖 ربات Focus Todo آماده اجراست!")

@@ -312,6 +312,22 @@ db = Database()
 # توابع کمکی
 # -----------------------------------------------------------
 # فقط یک تابع داشته باشید
+def convert_jalali_to_gregorian(jalali_date_str: str) -> str:
+    """تبدیل تاریخ شمسی به میلادی"""
+    try:
+        if '/' in jalali_date_str:
+            parts = jalali_date_str.split('/')
+            if len(parts) == 3:
+                year, month, day = map(int, parts)
+                # تبدیل تاریخ شمسی به میلادی
+                jdate = jdatetime.date(year, month, day)
+                gdate = jdate.togregorian()
+                return gdate.strftime("%Y-%m-%d")
+    except Exception as e:
+        logger.error(f"❌ خطا در تبدیل تاریخ {jalali_date_str}: {e}")
+    
+    # در صورت خطا، تاریخ امروز را برگردان
+    return get_db_date()
 def generate_coupon_code(user_id: Optional[int] = None) -> str:
     """تولید کد کوپن یکتا"""
     import random
@@ -1647,7 +1663,7 @@ def start_study_session(user_id: int, subject: str, topic: str, minutes: int) ->
             return None
         
         start_timestamp = int(time.time())
-        date_str, _ = get_iran_time()
+        date_str, _ = get_iran_time()  # تاریخ شمسی
         
         query = """
         INSERT INTO study_sessions (user_id, subject, topic, minutes, start_time, date)
@@ -1747,22 +1763,13 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
             logger.warning(f"⚠️ خطا در بروزرسانی آمار کاربر {user_id}: {e}")
         
         try:
-            # دریافت تاریخ برای دیتابیس
-            date_str_db = get_db_date()
-            
-            # اگر session_date در فرمت قدیمی است، تبدیل کن
+            # تبدیل تاریخ شمسی به میلادی برای دیتابیس
             if '/' in session_date:
-                # تبدیل از YYYY/MM/DD به YYYY-MM-DD
-                parts = session_date.split('/')
-                if len(parts) == 3:
-                    # فرض می‌کنیم تاریخ شمسی است
-                    jalali_year = int(parts[0])
-                    # تبدیل تقریبی شمسی به میلادی (افزودن 621 سال)
-                    gregorian_year = jalali_year + 621
-                    session_date_formatted = f"{gregorian_year}-{parts[1]}-{parts[2]}"
-                else:
-                    session_date_formatted = date_str_db  # از تاریخ امروز استفاده کن
+                # تاریخ شمسی است، تبدیل کن
+                session_date_formatted = convert_jalali_to_gregorian(session_date)
+                logger.info(f"📅 تاریخ شمسی {session_date} → میلادی {session_date_formatted}")
             else:
+                # تاریخ میلادی است
                 session_date_formatted = session_date
                 
             logger.info(f"📅 بروزرسانی daily_rankings برای تاریخ: {session_date_formatted}")

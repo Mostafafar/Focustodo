@@ -1306,6 +1306,7 @@ def get_cancel_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [[KeyboardButton("❌ لغو ثبت‌نام")]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
+
 def get_iran_time() -> Tuple[str, str]:
     """دریافت تاریخ و زمان ایران - تاریخ شمسی"""
     now = datetime.now(IRAN_TZ)
@@ -1313,13 +1314,17 @@ def get_iran_time() -> Tuple[str, str]:
     # تبدیل به تاریخ شمسی
     jdate = jdatetime.datetime.fromgregorian(datetime=now)
     
-    # تاریخ شمسی (سال/ماه/روز)
-    date_str = jdate.strftime("%Y/%m/%d")
+    # تاریخ شمسی (سال/ماه/روز) - برای نمایش
+    date_str_display = jdate.strftime("%Y/%m/%d")
+    
+    # تاریخ میلادی برای دیتابیس (YYYY-MM-DD)
+    date_str_db = now.strftime("%Y-%m-%d")
     
     # زمان
     time_str = now.strftime("%H:%M")
     
-    return date_str, time_str
+    # برگرداندن هر دو فرمت
+    return date_str_display, time_str, date_str_db
 def format_time(minutes: int) -> str:
     """تبدیل دقیقه به فرمت خوانا"""
     hours = minutes // 60

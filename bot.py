@@ -3780,7 +3780,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # بررسی پارامتر لینک
     if context.args and context.args[0] == "special":
         # ارسال عکس و متن تبلیغی مخصوص
-        photo_url = "https://raw.githubusercontent.com/Mostafafar/focustodo/main/welcome.jpg"
+        photo_url = "https://github.com/Mostafafar/Focustodo/blob/main/welcome.jpg?raw=true"
         
         try:
             await update.message.reply_photo(

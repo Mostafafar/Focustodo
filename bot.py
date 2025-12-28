@@ -1681,6 +1681,7 @@ def start_study_session(user_id: int, subject: str, topic: str, minutes: int) ->
         if conn:
             db.return_connection(conn)
 
+
 def complete_study_session(session_id: int) -> Optional[Dict]:
     """اتمام جلسه مطالعه"""
     try:
@@ -1747,7 +1748,7 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
         
         try:
             # دریافت تاریخ برای دیتابیس
-            date_str_display, time_str, date_str_db = get_iran_time()
+            date_str_db = get_db_date()
             
             # اگر session_date در فرمت قدیمی است، تبدیل کن
             if '/' in session_date:

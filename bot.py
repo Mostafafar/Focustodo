@@ -1836,7 +1836,8 @@ def get_today_rankings() -> List[Dict]:
     """دریافت رتبه‌بندی امروز"""
     try:
         # دریافت تاریخ امروز در فرمت دیتابیس
-        date_str_display, time_str, date_str_db = get_iran_time()
+        date_str_db = get_db_date()
+        date_str_display, time_str = get_iran_time()
         
         logger.info(f"🔍 دریافت رتبه‌بندی برای تاریخ: {date_str_db}")
         

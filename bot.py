@@ -1827,7 +1827,10 @@ def get_user_sessions(user_id: int, limit: int = 10) -> List[Dict]:
 def get_today_rankings() -> List[Dict]:
     """دریافت رتبه‌بندی امروز"""
     try:
-        date_str, _ = get_iran_time()
+        # دریافت تاریخ امروز در فرمت دیتابیس
+        date_str_display, time_str, date_str_db = get_iran_time()
+        
+        logger.info(f"🔍 دریافت رتبه‌بندی برای تاریخ: {date_str_db}")
         
         query = """
         SELECT u.user_id, u.username, u.grade, u.field, dr.total_minutes
@@ -1838,7 +1841,9 @@ def get_today_rankings() -> List[Dict]:
         LIMIT 20
         """
         
-        results = db.execute_query(query, (date_str,), fetchall=True)
+        results = db.execute_query(query, (date_str_db,), fetchall=True)
+        
+        logger.info(f"🔍 تعداد رکوردهای یافت شده: {len(results) if results else 0}")
         
         rankings = []
         if results:
@@ -1850,11 +1855,12 @@ def get_today_rankings() -> List[Dict]:
                     "field": row[3],
                     "total_minutes": row[4]
                 })
+                logger.info(f"  👤 {row[0]}: {row[4]} دقیقه")
         
         return rankings
         
     except Exception as e:
-        logger.error(f"خطا در دریافت رتبه‌بندی: {e}")
+        logger.error(f"خطا در دریافت رتبه‌بندی: {e}", exc_info=True)
         return []
 
 def get_user_rank_today(user_id: int) -> Tuple[Optional[int], Optional[int]]:

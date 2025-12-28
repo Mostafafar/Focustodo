@@ -1314,17 +1314,13 @@ def get_iran_time() -> Tuple[str, str]:
     # تبدیل به تاریخ شمسی
     jdate = jdatetime.datetime.fromgregorian(datetime=now)
     
-    # تاریخ شمسی (سال/ماه/روز) - برای نمایش
-    date_str_display = jdate.strftime("%Y/%m/%d")
-    
-    # تاریخ میلادی برای دیتابیس (YYYY-MM-DD)
-    date_str_db = now.strftime("%Y-%m-%d")
+    # تاریخ شمسی (سال/ماه/روز)
+    date_str = jdate.strftime("%Y/%m/%d")
     
     # زمان
     time_str = now.strftime("%H:%M")
     
-    # برگرداندن هر دو فرمت
-    return date_str_display, time_str, date_str_db
+    return date_str, time_str
 def format_time(minutes: int) -> str:
     """تبدیل دقیقه به فرمت خوانا"""
     hours = minutes // 60

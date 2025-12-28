@@ -1745,14 +1745,21 @@ def complete_study_session(session_id: int) -> Optional[Dict]:
             logger.warning(f"⚠️ خطا در بروزرسانی آمار کاربر {user_id}: {e}")
         
         try:
-            # تاریخ امروز با فرمت جدید
-            date_str, time_str = get_iran_time()  # حالا فرمت YYYY-MM-DD برمی‌گرداند
+            # دریافت تاریخ برای دیتابیس
+            date_str_display, time_str, date_str_db = get_iran_time()
             
-            # مطمئن شویم از تاریخ جلسه استفاده می‌کنیم نه تاریخ امروز
             # اگر session_date در فرمت قدیمی است، تبدیل کن
             if '/' in session_date:
                 # تبدیل از YYYY/MM/DD به YYYY-MM-DD
-                session_date_formatted = session_date.replace('/', '-')
+                parts = session_date.split('/')
+                if len(parts) == 3:
+                    # فرض می‌کنیم تاریخ شمسی است
+                    jalali_year = int(parts[0])
+                    # تبدیل تقریبی شمسی به میلادی (افزودن 621 سال)
+                    gregorian_year = jalali_year + 621
+                    session_date_formatted = f"{gregorian_year}-{parts[1]}-{parts[2]}"
+                else:
+                    session_date_formatted = date_str_db  # از تاریخ امروز استفاده کن
             else:
                 session_date_formatted = session_date
                 

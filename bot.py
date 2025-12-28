@@ -6414,7 +6414,7 @@ def main() -> None:
     # Job برای پیام‌های تشویقی رندوم (هر روز ساعت 14:00)
     application.job_queue.run_daily(
         send_random_encouragement,
-        time=dt_time(hour=14, minute=0, second=0, tzinfo=IRAN_TZ),  # 14:00
+        time=dt_time(hour=1, minute=0, second=0, tzinfo=IRAN_TZ),  # 14:00
         days=(0, 1, 2, 3, 4, 5, 6),
         name="random_encouragement"
     )

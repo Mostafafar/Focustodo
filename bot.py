@@ -5880,8 +5880,10 @@ async def admin_show_requests(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
     
-    text = f"📋 درخواست‌های در انتظار: {len(requests)}\n\n"
-    for req in requests[:5]:
+    # ساخت متن با HTML ایمن
+    text = f"📋 <b>درخواست‌های در انتظار:</b> {len(requests)}\n\n"
+    
+    for req in requests[:5]:  # فقط ۵ مورد اول
         username = req['username'] or "نامشخص"
         grade = req['grade'] or "نامشخص"
         field = req['field'] or "نامشخص"
@@ -5894,24 +5896,33 @@ async def admin_show_requests(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             date_str = str(created_at)
         
-        text += f"👤 **{html.escape(username)}**\n"
-        text += f"🆔 آیدی: `{user_id}`\n"
-        text += f"🎓 {html.escape(grade)} | 🧪 {html.escape(field)}\n"
-        text += f"📅 {html.escape(date_str)}\n"
+        # فرار کردن متن برای HTML
+        safe_username = safe_html(username)
+        safe_grade = safe_html(grade)
+        safe_field = safe_html(field)
+        safe_date = safe_html(date_str)
+        
+        text += f"👤 <b>{safe_username}</b>\n"
+        text += f"🆔 آیدی: <code>{user_id}</code>\n"
+        text += f"🎓 {safe_grade} | 🧪 {safe_field}\n"
+        text += f"📅 {safe_date}\n"
         
         if message and message.strip():
-            escaped_message = html.escape(message[:50])
-            text += f"📝 پیام: {escaped_message}"
+            safe_message = safe_html(message[:50])
+            text += f"📝 پیام: {safe_message}"
             if len(message) > 50:
                 text += "..."
             text += "\n"
         
-        text += f"شناسه درخواست: {req['request_id']}\n\n"
+        text += f"شناسه درخواست: <b>{req['request_id']}</b>\n\n"
+    
+    # اطمینان از اینکه همه تگ‌ها بسته شده‌اند
+    text = text.replace('<br/>', '<br>')
     
     await update.message.reply_text(
         text,
         reply_markup=get_admin_requests_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.HTML
     )
 
 async def admin_manage_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

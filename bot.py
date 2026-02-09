@@ -6399,8 +6399,8 @@ def safe_html(text: str) -> str:
     # فرار کردن کاراکترهای HTML
     text = html.escape(text)
     
-    # جایگزینی اینترها با <br>
-    text = text.replace('\n', '<br>')
+    # حذف تگ <br> و استفاده از \n به جای آن
+    text = text.replace('<br>', '\n')
     
     return text
 def main() -> None:

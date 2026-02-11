@@ -39,7 +39,7 @@ DB_CONFIG = {
     "host": "localhost",
     "database": "focustodo_db",
     "user": "postgres",
-    "password": "m13821382",
+    "password": "f13821382",
     "port": "5432"
 }
 
@@ -2202,15 +2202,32 @@ def delete_file(file_id: int) -> bool:
 # کیبوردهای ساده (بدون اینلاین)
 # -----------------------------------------------------------
 
+
+
+
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """منوی اصلی"""
+    """منوی اصلی با رنگ‌های درخواستی"""
     keyboard = [
-        ["➕ ثبت مطالعه"],
-        ["📚 منابع"],
-        ["🎫 کوپن"],
-        ["🏆 رتبه‌بندی"]
+        [
+            {"text": "➕ ثبت مطالعه", "style": "success"},     # سبز
+        ],
+        [
+            {"text": "📚 منابع", "style": "primary"},          # آبی
+        ],
+        [
+            {"text": "🎫 کوپن", "style": "success"},           # سبز
+        ],
+        [
+            {"text": "🏆 رتبه‌بندی", "style": "primary"},      # آبی
+        ],
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        input_field_placeholder="یکی از گزینه‌ها را انتخاب کنید..."
+    )
 def get_subjects_keyboard_reply() -> ReplyKeyboardMarkup:
     """کیبورد انتخاب درس"""
     keyboard = []

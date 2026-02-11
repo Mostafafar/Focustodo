@@ -948,16 +948,43 @@ def award_streak_coupon(user_id: int, streak_id: int) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"خطا در اعطای کوپن استرک: {e}")
         return None
+
+
+
 def get_coupon_main_keyboard() -> ReplyKeyboardMarkup:
-    """منوی اصلی کوپن"""
+    """
+    منوی اصلی کوپن
+    دکمه‌ها یکی در میون سبز و آبی
+    دکمه بازگشت قرمز
+    """
     keyboard = [
-        ["📞 تماس تلفنی", "📊 تحلیل گزارش"],
-        ["✏️ تصحیح آزمون", "📝 آزمون شخصی"],
-        ["📈 تحلیل آزمون", "🔗 برنامه شخصی"],
-        ["🎫 کوپن‌های من", "🛒 خرید کوپن"],
-        ["🔙 بازگشت"]
+        [
+            {"text": "📞 تماس تلفنی",     "style": "primary"},   # آبی
+            {"text": "📊 تحلیل گزارش",     "style": "success"},  # سبز
+        ],
+        [
+            {"text": "✏️ تصحیح آزمون",     "style": "primary"},   # آبی
+            {"text": "📝 آزمون شخصی",       "style": "success"},  # سبز
+        ],
+        [
+            {"text": "📈 تحلیل آزمون",      "style": "primary"},   # آبی
+            {"text": "🔗 برنامه شخصی",      "style": "success"},  # سبز
+        ],
+        [
+            {"text": "🎫 کوپن‌های من",      "style": "primary"},   # آبی
+            {"text": "🛒 خرید کوپن",        "style": "success"},  # سبز
+        ],
+        [
+            {"text": "🔙 بازگشت",           "style": "danger"},   # قرمز
+        ]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        input_field_placeholder="یکی از گزینه‌ها را انتخاب کنید..."
+)
 
 def get_coupon_method_keyboard() -> ReplyKeyboardMarkup:
     """کیبورد روش‌های کسب کوپن"""

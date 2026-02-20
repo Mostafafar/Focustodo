@@ -39,7 +39,7 @@ DB_CONFIG = {
     "host": "localhost",
     "database": "focustodo_db",
     "user": "postgres",
-    "password": "f13821382",
+    "password": "m13821382",
     "port": "5432"
 }
 

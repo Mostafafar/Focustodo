@@ -1,6573 +1,5656 @@
+# ==================== bot.py - ربات کامل مطالعه هوشمند ====================
+# نسخه نهایی با سیستم سطوح، چت AI، ساخت دستی و مدیریت کامل برنامه
+# با سیستم Undo کامل و تایید تغییرات
+
 import asyncio
-import jdatetime
-from datetime import time
-import logging
-import html
-import time
 import json
+import logging
 import os
-from datetime import datetime, timedelta, time as dt_time
+import re
+import time
+from datetime import datetime, timedelta, date
 from typing import Dict, List, Optional, Tuple, Any
-import pytz
+from enum import Enum
+
 import psycopg2
-from psycopg2 import pool
+from psycopg2 import pool, sql
+import jdatetime
+import pytz
+import httpx
+from dotenv import load_dotenv
+
 from telegram import (
-    Update, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    InputMediaPhoto
 )
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters, JobQueue
 )
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 
-# تنظیمات لاگ
+from openai import AsyncOpenAI
+import asyncio
+
+# ==================== بارگذاری تنظیمات از محیط ====================
+load_dotenv()
+
+TOKEN = os.getenv("BOT_TOKEN")
+AI_API_KEY = os.getenv("AI_API_KEY")
+AI_BASE_URL = os.getenv("AI_BASE_URL")
+AI_MODEL = os.getenv("AI_MODEL")
+
+DB_CONFIG = {
+    "host": os.getenv("DB_HOST", "localhost"),
+    "database": os.getenv("DB_NAME", "study_bot_db"),
+    "user": os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD"),
+    "port": os.getenv("DB_PORT", "5432")
+}
+
+ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
+
+IRAN_TZ = pytz.timezone('Asia/Tehran')
+
+GRADE_RULES = {
+    1: {"name": "آسان", "duration": 20, "emoji": "⭐"},
+    2: {"name": "نسبتاً آسان", "duration": 30, "emoji": "⭐⭐"},
+    3: {"name": "متوسط", "duration": 45, "emoji": "⭐⭐⭐"},
+    4: {"name": "نسبتاً سخت", "duration": 60, "emoji": "⭐⭐⭐⭐"},
+    5: {"name": "سخت", "duration": 75, "emoji": "⭐⭐⭐⭐⭐"},
+}
+
+PLAN_LEVELS = {
+    0: {"name": "اولیه", "days": 1, "emoji": "🌱"},
+    1: {"name": "روزانه", "days": 2, "emoji": "📈"},
+    2: {"name": "شخصی‌سازی‌شده", "days": 8, "emoji": "🎯"},
+    3: {"name": "شناور", "days": 15, "emoji": "🚀"}
+}
+
+# ==================== لاگ ====================
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# تنظیمات اصلی
-TOKEN = "8121929322:AAGlD1LAXROb2DG_34rY94Yl6cFBA4pZsBA"
-ADMIN_IDS = [6680287530]
-MAX_STUDY_TIME = 120
-MIN_STUDY_TIME = 10
-
-# تنظیمات دیتابیس PostgreSQL
-DB_CONFIG = {
-    "host": "localhost",
-    "database": "focustodo_db",
-    "user": "postgres",
-    "password": "m13821382",
-    "port": "5432"
-}
-
-# زمان ایران
-IRAN_TZ = pytz.timezone('Asia/Tehran')
-
-# دروس پیش‌فرض
-SUBJECTS = [
-    "فیزیک", "شیمی", "ریاضی", "زیست",
-    "ادبیات", "عربی", "دینی", "زبان",
-    "حسابان", "هندسه", "گسسته", "سایر"
-]
-
-# زمان‌های پیشنهادی
-SUGGESTED_TIMES = [
-    ("۳۰ دقیقه", 30),
-    ("۴۵ دقیقه", 45),
-    ("۱ ساعت", 60),
-    ("۱.۵ ساعت", 90),
-    ("۲ ساعت", 120)
-]
-
-# -----------------------------------------------------------
-# مدیریت دیتابیس
-# -----------------------------------------------------------
-
-class Database:
-    """کلاس مدیریت دیتابیس PostgreSQL"""
-    
-    def __init__(self):
-        self.connection_pool = None
-        self.init_pool()
-        self.create_tables()
-    
-    def init_pool(self):
-        """ایجاد Connection Pool"""
-        try:
-            self.connection_pool = psycopg2.pool.SimpleConnectionPool(
-                1, 20,
-                host=DB_CONFIG["host"],
-                database=DB_CONFIG["database"],
-                user=DB_CONFIG["user"],
-                password=DB_CONFIG["password"],
-                port=DB_CONFIG["port"]
-            )
-            logger.info("✅ Connection Pool ایجاد شد")
-        except Exception as e:
-            logger.error(f"❌ خطا در اتصال به دیتابیس: {e}")
-            raise
-    
-    def get_connection(self):
-        """دریافت یک Connection از Pool"""
-        return self.connection_pool.getconn()
-    
-    def return_connection(self, connection):
-        """بازگرداندن Connection به Pool"""
-        self.connection_pool.putconn(connection)
-    
-    def execute_query(self, query, params=None, fetch=False, fetchall=False):
-        """اجرای کوئری"""
-        conn = None
-        cursor = None
-        try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute(query, params or ())
-            
-            if fetch:
-                result = cursor.fetchone()
-            elif fetchall:
-                result = cursor.fetchall()
-            else:
-                conn.commit()
-                result = cursor.rowcount
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"❌ خطا در اجرای کوئری: {e}")
-            if conn:
-                conn.rollback()
-            raise
-            
-        finally:
-            if cursor:
-                cursor.close()
-            if conn:
-                self.return_connection(conn)
-    def create_tables(self):
-        """ایجاد جداول دیتابیس"""
-        queries = [
-            # جداول موجود...
-            
-            # جدول جدید: کوپن‌ها
-            
-            
-            # جدول جدید: تنظیمات سیستم
-            """
-            CREATE TABLE IF NOT EXISTS system_settings (
-                setting_id SERIAL PRIMARY KEY,
-                setting_key VARCHAR(100) UNIQUE,
-                setting_value TEXT,
-                description TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                username VARCHAR(255),
-                grade VARCHAR(50),
-                field VARCHAR(50),
-                message TEXT,
-                is_active BOOLEAN DEFAULT FALSE,
-                registration_date VARCHAR(50),
-                total_study_time INTEGER DEFAULT 0,
-                total_sessions INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS study_sessions (
-                session_id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                subject VARCHAR(100),
-                topic TEXT,
-                minutes INTEGER,
-                start_time BIGINT,
-                end_time BIGINT,
-                completed BOOLEAN DEFAULT FALSE,
-                date VARCHAR(50),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS files (
-                file_id SERIAL PRIMARY KEY,
-                grade VARCHAR(50),
-                field VARCHAR(50),
-                subject VARCHAR(100),
-                topic TEXT,
-                description TEXT,
-                telegram_file_id VARCHAR(500),
-                file_name VARCHAR(255),
-                file_size INTEGER,
-                mime_type VARCHAR(100),
-                upload_date VARCHAR(50),
-                download_count INTEGER DEFAULT 0,
-                uploader_id BIGINT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS daily_rankings (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                date VARCHAR(50),
-                total_minutes INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, date)
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS registration_requests (
-                request_id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                username VARCHAR(255),
-                grade VARCHAR(50),
-                field VARCHAR(50),
-                message TEXT,
-                status VARCHAR(20) DEFAULT 'pending',
-                admin_note TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            # در بخش ایجاد جداول دیتابیس (class Database - create_tables):
-            """
-            CREATE TABLE IF NOT EXISTS weekly_rankings (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                week_start_date VARCHAR(50),
-                total_minutes INTEGER DEFAULT 0,
-                rank INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, week_start_date)
-           )
-           """,
-           """
-           CREATE TABLE IF NOT EXISTS reward_coupons (
-               coupon_id SERIAL PRIMARY KEY,
-               user_id BIGINT REFERENCES users(user_id),
-               coupon_code VARCHAR(50) UNIQUE,
-               value INTEGER DEFAULT 20000,
-               status VARCHAR(20) DEFAULT 'pending',
-               study_session_id INTEGER,
-               created_date VARCHAR(50),
-               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-               expires_at VARCHAR(50),
-               used_at TIMESTAMP
-          )
-          """,
-
-            # جدول جدید: کوپن‌ها
-          """
-            CREATE TABLE IF NOT EXISTS coupons (
-                coupon_id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                coupon_code VARCHAR(50) UNIQUE,
-                coupon_source VARCHAR(50),
-                value INTEGER DEFAULT 400000,
-                status VARCHAR(20) DEFAULT 'active',
-                earned_date VARCHAR(50),
-                used_date VARCHAR(50),
-                used_for VARCHAR(50),
-                purchase_receipt TEXT,
-                admin_card_number VARCHAR(50),
-                verified_by_admin BOOLEAN DEFAULT FALSE,
-                notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            
-            # جدول جدید: استرک‌های مطالعه
-            """
-            CREATE TABLE IF NOT EXISTS user_study_streaks (
-                streak_id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                start_date VARCHAR(50),
-                end_date VARCHAR(50),
-                total_hours INTEGER,
-                days_count INTEGER,
-                earned_coupon BOOLEAN DEFAULT FALSE,
-                coupon_id INTEGER REFERENCES coupons(coupon_id),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            
-            # جدول جدید: درخواست‌های کوپن
-            """
-            CREATE TABLE IF NOT EXISTS coupon_requests (
-                request_id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                request_type VARCHAR(50), -- 'purchase', 'usage'
-                service_type VARCHAR(50), -- 'call', 'analysis', 'correction', 'exam', 'test_analysis'
-                coupon_codes TEXT, -- کدهای کوپن برای استفاده
-                amount INTEGER, -- مبلغ پرداختی
-                status VARCHAR(20) DEFAULT 'pending', -- 'pending', 'approved', 'rejected', 'completed'
-                receipt_image TEXT, -- عکس فیش
-                admin_note TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-            
-            
-        ]
-        
-        for query in queries:
-            try:
-                self.execute_query(query)
-            except Exception as e:
-                logger.warning(f"خطا در ایجاد جدول: {e}")
-        
-        logger.info("✅ جداول دیتابیس بررسی شدند")
-
-# ایجاد نمونه دیتابیس
-db = Database()
-
-# -----------------------------------------------------------
-# توابع کمکی
-# -----------------------------------------------------------
-# فقط یک تابع داشته باشید
-def convert_jalali_to_gregorian(jalali_date_str: str) -> str:
-    """تبدیل تاریخ شمسی به میلادی"""
-    try:
-        if '/' in jalali_date_str:
-            parts = jalali_date_str.split('/')
-            if len(parts) == 3:
-                year, month, day = map(int, parts)
-                # تبدیل تاریخ شمسی به میلادی
-                jdate = jdatetime.date(year, month, day)
-                gdate = jdate.togregorian()
-                return gdate.strftime("%Y-%m-%d")
-    except Exception as e:
-        logger.error(f"❌ خطا در تبدیل تاریخ {jalali_date_str}: {e}")
-    
-    # در صورت خطا، تاریخ امروز را برگردان
-    return get_db_date()
-def generate_coupon_code(user_id: Optional[int] = None) -> str:
-    """تولید کد کوپن یکتا"""
-    import random
-    import string
-    import time
-    
-    timestamp = int(time.time())
-    random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    
-    if user_id:
-        return f"FT{user_id:09d}{timestamp % 10000:04d}{random_str}"
-    else:
-        return f"FT{timestamp % 10000:04d}{random_str}"
-
-def create_coupon(user_id: int, source: str, receipt_image: str = None) -> Optional[Dict]:
-    """ایجاد کوپن جدید"""
-    try:
-        date_str, time_str = get_iran_time()
-        coupon_code = generate_coupon_code(user_id)
-        
-        logger.info(f"🔍 در حال ایجاد کوپن برای کاربر {user_id}")
-        logger.info(f"🎫 کد کوپن: {coupon_code}")
-        logger.info(f"🏷️ منبع: {source}")
-        logger.info(f"📅 تاریخ: {date_str}")
-        logger.info(f"📸 فیش: {receipt_image}")
-        
-        query = """
-        INSERT INTO coupons (user_id, coupon_code, coupon_source, value, earned_date, 
-                           purchase_receipt, status, verified_by_admin)
-        VALUES (%s, %s, %s, %s, %s, %s, 'active', TRUE)
-        RETURNING coupon_id, coupon_code, earned_date, value
-        """
-        
-        logger.info(f"🔍 اجرای کوئری INSERT برای کوپن...")
-        result = db.execute_query(query, (user_id, coupon_code, source, 400000, date_str, receipt_image), fetch=True)
-        
-        if result:
-            coupon_data = {
-                "coupon_id": result[0],
-                "coupon_code": result[1],
-                "earned_date": result[2],
-                "value": result[3] if len(result) > 3 else 400000,
-                "source": source
-            }
-            
-            logger.info(f"✅ کوپن ایجاد شد: {coupon_data}")
-            
-            # 🔍 تأیید ذخیره‌سازی
-            query_check = """
-            SELECT coupon_id, coupon_code, value, status 
-            FROM coupons 
-            WHERE coupon_id = %s
-            """
-            check_result = db.execute_query(query_check, (result[0],), fetch=True)
-            
-            if check_result:
-                logger.info(f"✅ تأیید ذخیره‌سازی کوپن در دیتابیس:")
-                logger.info(f"   🆔 ID: {check_result[0]}")
-                logger.info(f"   🎫 کد: {check_result[1]}")
-                logger.info(f"   💰 ارزش: {check_result[2]}")
-                logger.info(f"   ✅ وضعیت: {check_result[3]}")
-            else:
-                logger.error(f"❌ کوپن در دیتابیس یافت نشد!")
-            
-            return coupon_data
-        
-        logger.error("❌ هیچ نتیجه‌ای از INSERT کوپن برگشت داده نشد")
-        return None
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در ایجاد کوپن: {e}", exc_info=True)
-        return None
-
-
-def get_user_coupons(user_id: int, status: str = "active") -> List[Dict]:
-    """دریافت کوپن‌های کاربر"""
-    try:
-        logger.info(f"🔍 دریافت کوپن‌های کاربر {user_id} با وضعیت '{status}'")
-        
-        query = """
-        SELECT coupon_id, coupon_code, coupon_source, value, status, 
-               earned_date, used_date, used_for
-        FROM coupons
-        WHERE user_id = %s AND status = %s
-        ORDER BY earned_date DESC
-        """
-        
-        results = db.execute_query(query, (user_id, status), fetchall=True)
-        
-        logger.info(f"🔍 تعداد کوپن‌های یافت شده: {len(results) if results else 0}")
-        
-        coupons = []
-        if results:
-            for row in results:
-                coupons.append({
-                    "coupon_id": row[0],
-                    "coupon_code": row[1],
-                    "source": row[2],
-                    "value": row[3],
-                    "status": row[4],
-                    "earned_date": row[5],
-                    "used_date": row[6],
-                    "used_for": row[7]
-                })
-                logger.info(f"  🎫 {row[1]} - {row[2]} - {row[3]} ریال")
-        
-        return coupons
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در دریافت کوپن‌های کاربر: {e}", exc_info=True)
-        return []
-
-def get_coupon_by_code(coupon_code: str) -> Optional[Dict]:
-    """دریافت اطلاعات کوپن بر اساس کد"""
-    try:
-        query = """
-        SELECT coupon_id, user_id, coupon_code, coupon_source, value, 
-               status, earned_date, used_date, used_for
-        FROM coupons
-        WHERE coupon_code = %s
-        """
-        
-        result = db.execute_query(query, (coupon_code,), fetch=True)
-        
-        if result:
-            return {
-                "coupon_id": result[0],
-                "user_id": result[1],
-                "coupon_code": result[2],
-                "source": result[3],
-                "value": result[4],
-                "status": result[5],
-                "earned_date": result[6],
-                "used_date": result[7],
-                "used_for": result[8]
-            }
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت کوپن: {e}")
-        return None
-
-
-def use_coupon(coupon_code: str, service_type: str) -> bool:
-    """استفاده از کوپن برای یک خدمت"""
-    try:
-        date_str, time_str = get_iran_time()
-        
-        query = """
-        UPDATE coupons
-        SET status = 'used', used_date = %s, used_for = %s
-        WHERE coupon_code = %s AND status = 'active'
-        """
-        
-        rows_updated = db.execute_query(query, (date_str, service_type, coupon_code))
-        
-        logger.info(f"🔍 استفاده از کوپن {coupon_code}: {rows_updated} ردیف به‌روزرسانی شد")
-        
-        return rows_updated > 0
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در استفاده از کوپن {coupon_code}: {e}")
-        return False
-
-def create_coupon_request(user_id: int, request_type: str, service_type: str = None, 
-                         amount: int = None, receipt_image: str = None) -> Optional[Dict]:
-    """ایجاد درخواست جدید کوپن"""
-    conn = None
-    cursor = None
-    try:
-        logger.info(f"🔍 ایجاد درخواست کوپن برای کاربر {user_id}")
-        logger.info(f"📋 نوع: {request_type}, خدمت: {service_type}, مبلغ: {amount}")
-        
-        # استفاده مستقیم از connection (نه از execute_query)
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        logger.info(f"✅ Connection دریافت شد")
-        
-        query = """
-        INSERT INTO coupon_requests (user_id, request_type, service_type, amount, receipt_image, status)
-        VALUES (%s, %s, %s, %s, %s, 'pending')
-        RETURNING request_id, created_at
-        """
-        
-        params = (user_id, request_type, service_type, amount, receipt_image)
-        logger.info(f"🔍 اجرای INSERT با پارامترها: {params}")
-        
-        cursor.execute(query, params)
-        
-        result = cursor.fetchone()
-        logger.info(f"🔍 نتیجه fetchone: {result}")
-        
-        if result:
-            request_id, created_at = result
-            logger.info(f"✅ INSERT موفق - درخواست #{request_id}")
-            
-            # حتماً commit کن
-            conn.commit()
-            logger.info(f"✅ Commit انجام شد برای درخواست #{request_id}")
-            
-            # فوراً بررسی کن که ذخیره شده
-            cursor.execute("SELECT request_id FROM coupon_requests WHERE request_id = %s", (request_id,))
-            verify = cursor.fetchone()
-            logger.info(f"🔍 تأیید ذخیره‌سازی: {verify}")
-            
-            return {
-                "request_id": request_id,
-                "created_at": created_at
-            }
-        else:
-            logger.error("❌ هیچ نتیجه‌ای از INSERT برگشت داده نشد")
-            conn.rollback()
-            return None
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در ایجاد درخواست کوپن: {e}", exc_info=True)
-        if conn:
-            conn.rollback()
-        return None
-        
-    finally:
-        if cursor:
-            cursor.close()
-            logger.info("🔒 Cursor بسته شد")
-        if conn:
-            db.return_connection(conn)
-            logger.info("🔌 Connection بازگردانده شد")
-def test_execute_query_directly():
-    """تست مستقیم تابع execute_query"""
-    try:
-        logger.info("🧪 تست مستقیم execute_query...")
-        
-        # تست 1: INSERT ساده
-        query = """
-        INSERT INTO coupon_requests (user_id, request_type, amount, status)
-        VALUES (999888777, 'test_execute', 5000, 'pending')
-        RETURNING request_id
-        """
-        
-        result = db.execute_query(query, fetch=True)
-        logger.info(f"🔍 نتیجه execute_query: {result}")
-        
-        # تست 2: SELECT برای بررسی
-        if result:
-            query_select = "SELECT * FROM coupon_requests WHERE request_id = %s"
-            select_result = db.execute_query(query_select, (result[0],), fetch=True)
-            logger.info(f"🔍 نتیجه SELECT پس از INSERT: {select_result}")
-            
-        return result
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در تست execute_query: {e}", exc_info=True)
-        return None
-
-async def debug_all_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش همه درخواست‌های کوپن"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    try:
-        query = """
-        SELECT request_id, user_id, request_type, service_type, 
-               amount, status, created_at, admin_note, receipt_image
-        FROM coupon_requests
-        ORDER BY request_id DESC
-        LIMIT 20
-        """
-        
-        results = db.execute_query(query, fetchall=True)
-        
-        if not results:
-            await update.message.reply_text("🔭 هیچ درخواست کوپنی وجود ندارد.")
-            return
-        
-        text = "📋 **همه درخواست‌های کوپن**\n\n"
-        
-        for row in results:
-            request_id, user_id_db, request_type, service_type, amount, status, created_at, admin_note, receipt_image = row
-            
-            text += f"🆔 **#{request_id}**\n"
-            text += f"👤 کاربر: {user_id_db}\n"
-            text += f"📋 نوع: {request_type}\n"
-            text += f"💰 مبلغ: {amount or 0:,} تومان\n"
-            text += f"✅ وضعیت: **{status}**\n"
-            text += f"🖼️ فیش: {'✅ دارد' if receipt_image else '❌ ندارد'}\n"
-            text += f"📅 تاریخ: {created_at.strftime('%Y/%m/%d %H:%M') if isinstance(created_at, datetime) else created_at}\n"
-            
-            if admin_note:
-                text += f"📝 یادداشت: {admin_note[:50]}...\n" if len(admin_note) > 50 else f"📝 یادداشت: {admin_note}\n"
-            
-            text += f"🔧 دستور تأیید: `/verify_coupon {request_id}`\n"
-            text += "─" * 20 + "\n"
-        
-        # اگر متن خیلی طولانی شد، به چند بخش تقسیم کن
-        if len(text) > 4000:
-            parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
-            for part in parts:
-                await update.message.reply_text(part, parse_mode=ParseMode.MARKDOWN)
-        else:
-            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        
-    except Exception as e:
-        logger.error(f"خطا در نمایش همه درخواست‌ها: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ خطا: {e}")
-def get_pending_coupon_requests() -> List[Dict]:
-    """دریافت درخواست‌های کوپن در انتظار"""
-    try:
-        query = """
-        SELECT cr.request_id, cr.user_id, cr.request_type, cr.service_type, 
-               cr.amount, cr.receipt_image, cr.created_at, u.username
-        FROM coupon_requests cr
-        JOIN users u ON cr.user_id = u.user_id
-        WHERE cr.status = 'pending'
-        ORDER BY cr.created_at DESC
-        """
-        
-        results = db.execute_query(query, fetchall=True)
-        
-        requests = []
-        if results:
-            for row in results:
-                requests.append({
-                    "request_id": row[0],
-                    "user_id": row[1],
-                    "request_type": row[2],
-                    "service_type": row[3],
-                    "amount": row[4],
-                    "receipt_image": row[5],
-                    "created_at": row[6],
-                    "username": row[7]
-                })
-        
-        return requests
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت درخواست‌های کوپن: {e}")
-        return []
-
-
-def approve_coupon_request(request_id: int, admin_note: str = "") -> bool:
-    """تأیید درخواست کوپن"""
-    conn = None
-    cursor = None
-    
-    try:
-        logger.info(f"🔍 شروع تأیید درخواست کوپن #{request_id}")
-        
-        # استفاده مستقیم از connection برای کنترل بهتر
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        # دریافت اطلاعات درخواست
-        query = """
-        SELECT user_id, request_type, amount, receipt_image, status
-        FROM coupon_requests
-        WHERE request_id = %s
-        """
-        
-        cursor.execute(query, (request_id,))
-        request = cursor.fetchone()
-        
-        if not request:
-            logger.error(f"❌ درخواست #{request_id} یافت نشد")
-            return False
-        
-        user_id, request_type, amount, receipt_image, current_status = request
-        logger.info(f"🔍 درخواست #{request_id} یافت شد: کاربر={user_id}, نوع={request_type}, وضعیت={current_status}")
-        
-        # بررسی وضعیت درخواست
-        if current_status not in ['pending']:
-            logger.error(f"❌ درخواست #{request_id} در وضعیت '{current_status}' است و قابل تأیید نیست")
-            return False
-        
-        # ایجاد کوپن برای کاربر
-        if request_type == "purchase":
-            logger.info(f"🔍 ایجاد کوپن برای کاربر {user_id}")
-            
-            # ایجاد کوپن با connection یکسان
-            date_str, time_str = get_iran_time()
-            coupon_code = generate_coupon_code(user_id)
-            
-            logger.info(f"🎫 کد کوپن: {coupon_code}")
-            logger.info(f"🏷️ منبع: purchased")
-            
-            # INSERT کوپن
-            query_coupon = """
-            INSERT INTO coupons (user_id, coupon_code, coupon_source, value, earned_date, 
-                               purchase_receipt, status, verified_by_admin)
-            VALUES (%s, %s, %s, %s, %s, %s, 'active', TRUE)
-            RETURNING coupon_id, coupon_code, earned_date, value
-            """
-            
-            cursor.execute(query_coupon, (user_id, coupon_code, "purchased", 400000, date_str, receipt_image))
-            coupon_result = cursor.fetchone()
-            
-            if not coupon_result:
-                logger.error(f"❌ خطا در ایجاد کوپن برای کاربر {user_id}")
-                conn.rollback()
-                return False
-            
-            coupon_id, coupon_code, earned_date, value = coupon_result
-            logger.info(f"✅ کوپن ایجاد شد: {coupon_code} (ID: {coupon_id})")
-            
-            # بروزرسانی وضعیت درخواست
-            query_update = """
-            UPDATE coupon_requests
-            SET status = 'approved', admin_note = %s
-            WHERE request_id = %s
-            """
-            cursor.execute(query_update, (admin_note, request_id))
-            
-            # commit تمام تغییرات
-            conn.commit()
-            logger.info(f"✅ درخواست #{request_id} و کوپن {coupon_code} تأیید و ذخیره شد")
-            
-            # تأیید نهایی: بررسی کوپن در دیتابیس
-            cursor.execute("SELECT coupon_code, status FROM coupons WHERE coupon_id = %s", (coupon_id,))
-            verify = cursor.fetchone()
-            if verify:
-                logger.info(f"✅ تأیید نهایی: کوپن {verify[0]} با وضعیت {verify[1]} در دیتابیس ذخیره شد")
-            else:
-                logger.error(f"❌ کوپن {coupon_code} در دیتابیس یافت نشد!")
-            
-            # ایجاد پیام برای کاربر
-            coupon_data = {
-                "coupon_id": coupon_id,
-                "coupon_code": coupon_code,
-                "earned_date": earned_date,
-                "value": value
-            }
-            
-            return True
-        
-        logger.error(f"❌ نوع درخواست نامعتبر: {request_type}")
-        return False
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در تأیید درخواست کوپن: {e}", exc_info=True)
-        if conn:
-            conn.rollback()
-        return False
-        
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            db.return_connection(conn)
-
-# -----------------------------------------------------------
-# 3. توابع جدید برای مدیریت تنظیمات
-# -----------------------------------------------------------
-
-def get_admin_card_info() -> Dict:
-    """دریافت اطلاعات کارت ادمین"""
-    try:
-        query = """
-        SELECT setting_value FROM system_settings
-        WHERE setting_key = 'admin_card_info'
-        """
-        
-        result = db.execute_query(query, fetch=True)
-        
-        if result and result[0]:
-            return json.loads(result[0])
-        
-        # اطلاعات پیش‌فرض
-        return {
-            "card_number": "۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸",
-            "card_owner": "علی محمدی"
-        }
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت اطلاعات کارت: {e}")
-        return {
-            "card_number": "۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸",
-            "card_owner": "علی محمدی"
-        }
-
-def set_admin_card_info(card_number: str, card_owner: str) -> bool:
-    """ذخیره اطلاعات کارت ادمین"""
-    try:
-        card_info = json.dumps({
-            "card_number": card_number,
-            "card_owner": card_owner,
-            "updated_at": datetime.now(IRAN_TZ).strftime("%Y/%m/%d %H:%M")
-        })
-        
-        query = """
-        INSERT INTO system_settings (setting_key, setting_value, description)
-        VALUES ('admin_card_info', %s, 'شماره کارت و نام صاحب حساب ادمین')
-        ON CONFLICT (setting_key) DO UPDATE SET
-            setting_value = EXCLUDED.setting_value,
-            updated_at = CURRENT_TIMESTAMP
-        """
-        
-        db.execute_query(query, (card_info,))
-        
-        logger.info(f"✅ اطلاعات کارت ادمین به‌روزرسانی شد: {card_number}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"خطا در ذخیره اطلاعات کارت: {e}")
-        return False
-
-def initialize_default_settings():
-    """مقداردهی اولیه تنظیمات سیستم"""
-    try:
-        # کارت ادمین
-        if not get_admin_card_info().get("card_number"):
-            set_admin_card_info("۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸", "علی محمدی")
-        
-        logger.info("✅ تنظیمات پیش‌فرض سیستم مقداردهی شد")
-        
-    except Exception as e:
-        logger.error(f"خطا در مقداردهی تنظیمات: {e}")
-
-# -----------------------------------------------------------
-# 4. توابع جدید برای سیستم کسب خودکار کوپن
-# -----------------------------------------------------------
-
-
-def check_study_streak(user_id: int) -> Optional[Dict]:
-    """بررسی استرک مطالعه کاربر برای کسب کوپن"""
-    try:
-        now = datetime.now(IRAN_TZ)
-        today_str = now.strftime("%Y-%m-%d")  # فرمت: 2025-12-26
-        yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-        
-        logger.info(f"🔍 بررسی استرک - تاریخ امروز: {today_str}")
-        logger.info(f"🔍 بررسی استرک - تاریخ دیروز: {yesterday_str}")
-        
-        # دریافت آمار مطالعه از daily_rankings
-        query_yesterday = """
-        SELECT total_minutes FROM daily_rankings
-        WHERE user_id = %s AND date = %s
-        """
-        yesterday_result = db.execute_query(query_yesterday, (user_id, yesterday_str), fetch=True)
-        yesterday_minutes = yesterday_result[0] if yesterday_result else 0
-        
-        query_today = """
-        SELECT total_minutes FROM daily_rankings
-        WHERE user_id = %s AND date = %s
-        """
-        today_result = db.execute_query(query_today, (user_id, today_str), fetch=True)
-        today_minutes = today_result[0] if today_result else 0
-        
-        logger.info(f"🔍 بررسی استرک برای کاربر {user_id}:")
-        logger.info(f"  دیروز ({yesterday_str}): {yesterday_minutes} دقیقه")
-        logger.info(f"  امروز ({today_str}): {today_minutes} دقیقه")
-        
-        # شرط کسب کوپن: هر روز حداقل ۶ ساعت (۳۶۰ دقیقه)
-        if yesterday_minutes >= 360 and today_minutes >= 360:
-            # بررسی نکرده باشد قبلاً برای این دوره کوپن گرفته
-            query_check = """
-            SELECT streak_id FROM user_study_streaks
-            WHERE user_id = %s AND end_date = %s AND earned_coupon = TRUE
-            """
-            already_earned = db.execute_query(query_check, (user_id, today_str), fetch=True)
-            
-            if not already_earned:
-                # ایجاد استرک
-                query_streak = """
-                INSERT INTO user_study_streaks (user_id, start_date, end_date, 
-                                              total_hours, days_count, earned_coupon)
-                VALUES (%s, %s, %s, %s, %s, FALSE)
-                RETURNING streak_id
-                """
-                
-                total_hours = (yesterday_minutes + today_minutes) // 60
-                streak_result = db.execute_query(query_streak, 
-                    (user_id, yesterday_str, today_str, total_hours, 2), fetch=True)
-                
-                if streak_result:
-                    streak_id = streak_result[0]
-                    logger.info(f"✅ استرک واجد شرایط ایجاد شد: ID={streak_id}")
-                    return {
-                        "eligible": True,
-                        "yesterday_minutes": yesterday_minutes,
-                        "today_minutes": today_minutes,
-                        "total_hours": total_hours,
-                        "streak_id": streak_id
-                    }
-        
-        return {
-            "eligible": False,
-            "yesterday_minutes": yesterday_minutes,
-            "today_minutes": today_minutes
-        }
-        
-    except Exception as e:
-        logger.error(f"خطا در بررسی استرک مطالعه: {e}", exc_info=True)
-        return None
-
-def award_streak_coupon(user_id: int, streak_id: int) -> Optional[Dict]:
-    """اعطای کوپن به کاربر برای استرک مطالعه"""
-    try:
-        # ایجاد کوپن
-        coupon = create_coupon(user_id, "study_streak")
-        
-        if not coupon:
-            return None
-        
-        # بروزرسانی استرک
-        query = """
-        UPDATE user_study_streaks
-        SET earned_coupon = TRUE, coupon_id = %s
-        WHERE streak_id = %s
-        """
-        db.execute_query(query, (coupon["coupon_id"], streak_id))
-        
-        return coupon
-        
-    except Exception as e:
-        logger.error(f"خطا در اعطای کوپن استرک: {e}")
-        return None
-
-
-
-def get_coupon_main_keyboard() -> ReplyKeyboardMarkup:
-    """
-    منوی اصلی کوپن
-    دکمه‌ها یکی در میون سبز و آبی
-    دکمه بازگشت قرمز
-    """
-    keyboard = [
-        [
-            {"text": "📞 تماس تلفنی",     "style": "primary"},   # آبی
-            {"text": "📊 تحلیل گزارش",     "style": "success"},  # سبز
-        ],
-        [
-            {"text": "✏️ تصحیح آزمون",     "style": "primary"},   # آبی
-            {"text": "📝 آزمون شخصی",       "style": "success"},  # سبز
-        ],
-        [
-            {"text": "📈 تحلیل آزمون",      "style": "primary"},   # آبی
-            {"text": "🔗 برنامه شخصی",      "style": "success"},  # سبز
-        ],
-        [
-            {"text": "🎫 کوپن‌های من",      "style": "primary"},   # آبی
-            {"text": "🛒 خرید کوپن",        "style": "success"},  # سبز
-        ],
-        [
-            {"text": "🔙 بازگشت",           "style": "danger"},   # قرمز
-        ]
-    ]
-
-    return ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True,
-        one_time_keyboard=False,
-        input_field_placeholder="یکی از گزینه‌ها را انتخاب کنید..."
+# ==================== AsyncOpenAI Client ====================
+client = AsyncOpenAI(
+    base_url=AI_BASE_URL,
+    api_key=AI_API_KEY,
+    timeout=httpx.Timeout(30.0, connect=10.0)
 )
 
-def get_coupon_method_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد روش‌های کسب کوپن"""
-    keyboard = [
-        ["⏰ کسب از مطالعه", "💳 خرید کوپن"],
-        ["🔙 بازگشت"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+# ==================== دیتابیس ====================
+db_pool = None
 
-def get_coupon_services_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد خدمات کوپن"""
-    keyboard = [
-        ["📞 تماس تلفنی (۱ کوپن)", "📊 تحلیل گزارش (۱ کوپن)"],
-        ["✏️ تصحیح آزمون (۱ کوپن)", "📈 تحلیل آزمون (۱ کوپن)"],
-        ["📝 آزمون شخصی (۲ کوپن)", "🔙 بازگشت"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_coupon_management_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد مدیریت کوپن برای کاربر"""
-    keyboard = [
-        ["🎫 کوپن‌های فعال", "📋 درخواست‌های من"],
-        ["🛒 خرید کوپن جدید", "🏠 منوی اصلی"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_admin_coupon_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد مدیریت کوپن برای ادمین"""
-    keyboard = [
-        ["📋 درخواست‌های کوپن", "🏦 تغییر کارت"],
-        ["📊 آمار کوپن‌ها", "🔙 بازگشت"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_start_of_week() -> str:
-    """دریافت تاریخ شروع هفته (شنبه)"""
-    today = datetime.now(IRAN_TZ)
-    # در Python دوشنبه=0، یکشنبه=6. برای شنبه (آغاز هفته ایرانی) 5 روز کم می‌کنیم
-    start_of_week = today - timedelta(days=(today.weekday() + 2) % 7)
-    return start_of_week.strftime("%Y-%m-%d")
-
-def get_weekly_rankings(limit: int = 50) -> List[Dict]:
-    """دریافت رتبه‌بندی هفتگی"""
+def init_db_pool():
+    global db_pool
     try:
-        week_start = get_start_of_week()
-        
-        query = """
-        SELECT u.user_id, u.username, u.grade, u.field, 
-               COALESCE(SUM(dr.total_minutes), 0) as weekly_total
-        FROM users u
-        LEFT JOIN daily_rankings dr ON u.user_id = dr.user_id AND dr.date >= %s
-        WHERE u.is_active = TRUE
-        GROUP BY u.user_id, u.username, u.grade, u.field
-        ORDER BY weekly_total DESC
-        LIMIT %s
-        """
-        
-        results = db.execute_query(query, (week_start, limit), fetchall=True)
-        
-        rankings = []
-        for row in results:
-            rankings.append({
-                "user_id": row[0],
-                "username": row[1],
-                "grade": row[2],
-                "field": row[3],
-                "total_minutes": row[4] or 0
-            })
-        
-        # به‌روزرسانی رتبه در دیتابیس
-        for i, rank in enumerate(rankings, 1):
-            query = """
-            INSERT INTO weekly_rankings (user_id, week_start_date, total_minutes, rank)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (user_id, week_start_date) DO UPDATE SET
-                total_minutes = EXCLUDED.total_minutes,
-                rank = EXCLUDED.rank
-            """
-            db.execute_query(query, (rank["user_id"], week_start, rank["total_minutes"], i))
-        
-        return rankings
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت رتبه‌بندی هفتگی: {e}")
-        return []
-
-def get_user_weekly_rank(user_id: int) -> Tuple[Optional[int], Optional[int], Optional[int]]:
-    """دریافت رتبه، زمان و فاصله با نفرات برتر هفتگی"""
-    try:
-        week_start = get_start_of_week()
-        
-        # دریافت رتبه‌بندی کامل هفتگی
-        rankings = get_weekly_rankings(limit=100)
-        
-        # یافتن کاربر در رتبه‌بندی
-        user_rank = None
-        user_minutes = 0
-        
-        for i, rank in enumerate(rankings, 1):
-            if rank["user_id"] == user_id:
-                user_rank = i
-                user_minutes = rank["total_minutes"]
-                break
-        
-        if not user_rank:
-            # اگر کاربر در رتبه‌بندی نیست
-            query = """
-            SELECT COALESCE(SUM(total_minutes), 0)
-            FROM daily_rankings
-            WHERE user_id = %s AND date >= %s
-            """
-            result = db.execute_query(query, (user_id, week_start), fetch=True)
-            user_minutes = result[0] if result else 0
-            
-            # محاسبه رتبه تخمینی
-            query = """
-            SELECT COUNT(DISTINCT user_id) + 1
-            FROM daily_rankings
-            WHERE date >= %s 
-            AND COALESCE(SUM(total_minutes), 0) > %s
-            GROUP BY user_id
-            """
-            result = db.execute_query(query, (week_start, user_minutes), fetch=True)
-            user_rank = result[0] if result else len(rankings) + 1
-        
-        # محاسبه فاصله با نفر پنجم
-        gap_minutes = 0
-        if user_rank > 5 and len(rankings) >= 5:
-            fifth_minutes = rankings[4]["total_minutes"]  # ایندکس 4 = نفر پنجم
-            gap_minutes = fifth_minutes - user_minutes
-            gap_minutes = max(0, gap_minutes)
-        
-        return user_rank, user_minutes, gap_minutes
-        
-    except Exception as e:
-        logger.error(f"خطا در محاسبه رتبه هفتگی: {e}")
-        return None, 0, 0
-
-def get_inactive_users_today() -> List[Dict]:
-    """دریافت کاربرانی که امروز مطالعه نکرده‌اند"""
-    try:
-        date_str, _ = get_iran_time()
-        
-        query = """
-        SELECT u.user_id, u.username, u.grade, u.field
-        FROM users u
-        LEFT JOIN daily_rankings dr ON u.user_id = dr.user_id AND dr.date = %s
-        WHERE u.is_active = TRUE 
-        AND (dr.user_id IS NULL OR dr.total_minutes = 0)
-        AND u.user_id NOT IN (
-            SELECT user_id FROM user_activities 
-            WHERE date = %s AND received_encouragement = TRUE
+        db_pool = psycopg2.pool.SimpleConnectionPool(
+            1, 20,
+            host=DB_CONFIG["host"],
+            database=DB_CONFIG["database"],
+            user=DB_CONFIG["user"],
+            password=DB_CONFIG["password"],
+            port=DB_CONFIG["port"]
         )
-        ORDER BY RANDOM()
-        LIMIT 50
-        """
-        
-        results = db.execute_query(query, (date_str, date_str), fetchall=True)
-        
-        users = []
-        for row in results:
-            users.append({
-                "user_id": row[0],
-                "username": row[1],
-                "grade": row[2],
-                "field": row[3]
-            })
-        
-        return users
-        
+        logger.info("✅ Connection Pool ایجاد شد")
     except Exception as e:
-        logger.error(f"خطا در دریافت کاربران بی‌فعال: {e}")
-        return []
+        logger.error(f"❌ خطا در اتصال به دیتابیس: {e}")
+        raise
 
+def get_connection():
+    return db_pool.getconn()
 
-def create_coupon_for_user(user_id: int, study_session_id: int = None) -> Optional[Dict]:
-    """ایجاد کوپن پاداش برای کاربر"""
-    try:
-        date_str, _ = get_iran_time()
-        
-        # تاریخ انقضا (۷ روز بعد)
-        expires_date = (datetime.now(IRAN_TZ) + timedelta(days=7)).strftime("%Y-%m-%d")
-        
-        coupon_code = generate_coupon_code(user_id)
-        query = """
-        INSERT INTO reward_coupons (user_id, coupon_code, value, study_session_id, created_date, expires_at)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING coupon_id, coupon_code, created_date
-        """
-        
-        result = db.execute_query(query, (user_id, coupon_code, 20000, study_session_id, date_str, expires_date), fetch=True)
-        
-        if result:
-            return {
-                "coupon_id": result[0],
-                "coupon_code": result[1],
-                "created_date": result[2],
-                "value": 20000
-            }
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"خطا در ایجاد کوپن: {e}")
-        return None
+def return_connection(conn):
+    db_pool.putconn(conn)
 
-def get_today_sessions(user_id: int) -> List[Dict]:
-    """دریافت جلسات امروز کاربر"""
-    try:
-        date_str = datetime.now(IRAN_TZ).strftime("%Y/%m/%d")
-        
-        query = """
-        SELECT session_id, subject, topic, minutes, 
-               TO_TIMESTAMP(start_time) as start_time
-        FROM study_sessions
-        WHERE user_id = %s AND date = %s AND completed = TRUE
-        ORDER BY start_time
-        """
-        
-        results = db.execute_query(query, (user_id, date_str), fetchall=True)
-        
-        sessions = []
-        for row in results:
-            sessions.append({
-                "session_id": row[0],
-                "subject": row[1],
-                "topic": row[2],
-                "minutes": row[3],
-                "start_time": row[4]
-            })
-        
-        return sessions
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت جلسات امروز: {e}", exc_info=True)
-        return []
-async def check_my_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی آمار مطالعه کاربر"""
-    user_id = update.effective_user.id
-    
-    try:
-        date_str = datetime.now(IRAN_TZ).strftime("%Y/%m/%d")
-        yesterday = (datetime.now(IRAN_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
-        
-        # آمار امروز از daily_rankings
-        query_today = """
-        SELECT total_minutes FROM daily_rankings
-        WHERE user_id = %s AND date = %s
-        """
-        today_stats = db.execute_query(query_today, (user_id, date_str), fetch=True)
-        today_minutes = today_stats[0] if today_stats else 0
-        
-        # آمار امروز از study_sessions
-        query_sessions = """
-        SELECT COUNT(*) as sessions, COALESCE(SUM(minutes), 0) as total
-        FROM study_sessions
-        WHERE user_id = %s AND date = %s AND completed = TRUE
-        """
-        sessions_stats = db.execute_query(query_sessions, (user_id, date_str), fetch=True)
-        sessions_count = sessions_stats[0] if sessions_stats else 0
-        sessions_total = sessions_stats[1] if sessions_stats else 0
-        
-        # آمار دیروز
-        query_yesterday = """
-        SELECT total_minutes FROM daily_rankings
-        WHERE user_id = %s AND date = %s
-        """
-        yesterday_stats = db.execute_query(query_yesterday, (user_id, yesterday), fetch=True)
-        yesterday_minutes = yesterday_stats[0] if yesterday_stats else 0
-        
-        text = f"""
-🔍 **آمار مطالعه شما**
-
-📅 **امروز ({date_str}):**
-• از daily_rankings: {today_minutes} دقیقه
-• از study_sessions: {sessions_total} دقیقه ({sessions_count} جلسه)
-
-📅 **دیروز ({yesterday}):**
-• مطالعه: {yesterday_minutes} دقیقه
-
-📊 **تست سیستم کسب کوپن:**
-• دیروز: {yesterday_minutes} دقیقه (نیاز: 360+)
-• امروز: {today_minutes} دقیقه (نیاز: 360+)
-• واجد شرایط: {"✅ بله" if yesterday_minutes >= 360 and today_minutes >= 360 else "❌ خیر"}
-"""
-        
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        
-    except Exception as e:
-        logger.error(f"خطا در بررسی آمار: {e}")
-        await update.message.reply_text(f"❌ خطا: {e}")
-
-def mark_encouragement_sent(user_id: int) -> bool:
-    """علامت‌گذاری ارسال پیام تشویقی"""
-    try:
-        now = datetime.now(IRAN_TZ)
-        date_str = now.strftime("%Y-%m-%d")  # تاریخ امروز
-        time_str = now.strftime("%H:%M:%S")  # زمان دقیق
-        
-        # 🔴 اضافه کردن created_at با زمان دقیق
-        query = """
-        INSERT INTO user_activities (user_id, date, received_encouragement, created_at)
-        VALUES (%s, %s, TRUE, %s)
-        ON CONFLICT (user_id, date) DO UPDATE SET
-            received_encouragement = TRUE,
-            created_at = EXCLUDED.created_at
-        """
-        
-        db.execute_query(query, (user_id, date_str, now))
-        return True
-        
-    except Exception as e:
-        logger.error(f"خطا در علامت‌گذاری پیام تشویقی: {e}")
-        return False
-
-def mark_report_sent(user_id: int, report_type: str) -> bool:
-    """علامت‌گذاری ارسال گزارش (midday/night)"""
-    try:
-        date_str, _ = get_iran_time()
-        
-        if report_type == "midday":
-            field = "received_midday_report"
-        elif report_type == "night":
-            field = "received_night_report"
-        else:
-            return False
-        
-        query = f"""
-        INSERT INTO user_activities (user_id, date, {field})
-        VALUES (%s, %s, TRUE)
-        ON CONFLICT (user_id, date) DO UPDATE SET
-            {field} = TRUE
-        """
-        
-        db.execute_query(query, (user_id, date_str))
-        return True
-        
-    except Exception as e:
-        logger.error(f"خطا در علامت‌گذاری گزارش: {e}")
-        return False
-def get_grade_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد انتخاب پایه تحصیلی"""
-    keyboard = [
-        [KeyboardButton("دهم")],
-        [KeyboardButton("یازدهم")],
-        [KeyboardButton("دوازدهم")],
-        [KeyboardButton("فارغ‌التحصیل")],
-        [KeyboardButton("دانشجو")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_field_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد انتخاب رشته"""
-    keyboard = [
-        [KeyboardButton("ریاضی"), KeyboardButton("انسانی")],
-        [KeyboardButton("تجربی"), KeyboardButton("سایر")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_cancel_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد لغو"""
-    keyboard = [[KeyboardButton("❌ لغو ثبت‌نام")]]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-
-def get_iran_time() -> Tuple[str, str]:
-    """دریافت تاریخ و زمان ایران - تاریخ شمسی (برای نمایش)"""
-    now = datetime.now(IRAN_TZ)
-    
-    # تبدیل به تاریخ شمسی
-    jdate = jdatetime.datetime.fromgregorian(datetime=now)
-    
-    # تاریخ شمسی (سال/ماه/روز) - برای نمایش
-    date_str = jdate.strftime("%Y/%m/%d")
-    
-    # زمان
-    time_str = now.strftime("%H:%M")
-    
-    return date_str, time_str
-
-def get_db_date() -> str:
-    """دریافت تاریخ برای دیتابیس (YYYY-MM-DD)"""
-    now = datetime.now(IRAN_TZ)
-    return now.strftime("%Y-%m-%d")
-def format_time(minutes: int) -> str:
-    """تبدیل دقیقه به فرمت خوانا"""
-    hours = minutes // 60
-    mins = minutes % 60
-    
-    if hours > 0 and mins > 0:
-        return f"{hours} ساعت و {mins} دقیقه"
-    elif hours > 0:
-        return f"{hours} ساعت"
-    else:
-        return f"{mins} دقیقه"
-
-def calculate_score(minutes: int) -> int:
-    """محاسبه امتیاز بر اساس زمان مطالعه"""
-    return int(minutes * 1.5)
-
-def is_admin(user_id: int) -> bool:
-    """بررسی ادمین بودن کاربر"""
-    return user_id in ADMIN_IDS
-
-def validate_file_type(file_name: str) -> bool:
-    """بررسی مجاز بودن نوع فایل"""
-    allowed_extensions = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', 
-                         '.xls', '.xlsx', '.txt', '.mp4', '.mp3',
-                         '.jpg', '.jpeg', '.png', '.zip', '.rar']
-    
-    file_ext = os.path.splitext(file_name.lower())[1]
-    return file_ext in allowed_extensions
-
-def get_file_size_limit(file_name: str) -> int:
-    """دریافت محدودیت حجم بر اساس نوع فایل"""
-    return 500 * 1024 * 1024
-
-# -----------------------------------------------------------
-# مدیریت کاربران
-# -----------------------------------------------------------
-
-def register_user(user_id: int, username: str, grade: str, field: str, message: str = "") -> bool:
-    """ثبت کاربر جدید در دیتابیس"""
-    try:
-        date_str, _ = get_iran_time()
-        
-        query = """
-        INSERT INTO registration_requests (user_id, username, grade, field, message, status)
-        VALUES (%s, %s, %s, %s, %s, 'pending')
-        """
-        db.execute_query(query, (user_id, username, grade, field, message))
-        
-        logger.info(f"درخواست ثبت‌نام جدید: {username} ({user_id})")
-        return True
-        
-    except Exception as e:
-        logger.error(f"خطا در ثبت کاربر: {e}")
-        return False
-
-def get_pending_requests() -> List[Dict]:
-    """دریافت درخواست‌های ثبت‌نام در انتظار"""
-    query = """
-    SELECT request_id, user_id, username, grade, field, message, created_at
-    FROM registration_requests
-    WHERE status = 'pending'
-    ORDER BY created_at DESC
-    """
-    
-    results = db.execute_query(query, fetchall=True)
-    
-    requests = []
-    if results:
-        for row in results:
-            requests.append({
-                "request_id": row[0],
-                "user_id": row[1],
-                "username": row[2],
-                "grade": row[3],
-                "field": row[4],
-                "message": row[5],
-                "created_at": row[6]
-            })
-    
-    return requests
-
-def approve_registration(request_id: int, admin_note: str = "") -> bool:
-    """تأیید درخواست ثبت‌نام"""
-    try:
-        query = """
-        SELECT user_id, username, grade, field, message
-        FROM registration_requests
-        WHERE request_id = %s AND status = 'pending'
-        """
-        result = db.execute_query(query, (request_id,), fetch=True)
-        
-        if not result:
-            return False
-        
-        user_id, username, grade, field, message = result
-        
-        date_str, _ = get_iran_time()
-        query = """
-        INSERT INTO users (user_id, username, grade, field, message, is_active, registration_date)
-        VALUES (%s, %s, %s, %s, %s, TRUE, %s)
-        ON CONFLICT (user_id) DO UPDATE SET
-            is_active = TRUE,
-            grade = EXCLUDED.grade,
-            field = EXCLUDED.field,
-            message = EXCLUDED.message
-        """
-        db.execute_query(query, (user_id, username, grade, field, message, date_str))
-        
-        query = """
-        UPDATE registration_requests
-        SET status = 'approved', admin_note = %s
-        WHERE request_id = %s
-        """
-        db.execute_query(query, (admin_note, request_id))
-        
-        logger.info(f"کاربر تأیید شد: {username} ({user_id})")
-        return True
-        
-    except Exception as e:
-        logger.error(f"خطا در تأیید کاربر: {e}")
-        return False
-
-def reject_registration(request_id: int, admin_note: str) -> bool:
-    """رد درخواست ثبت‌نام"""
-    try:
-        query = """
-        UPDATE registration_requests
-        SET status = 'rejected', admin_note = %s
-        WHERE request_id = %s AND status = 'pending'
-        """
-        db.execute_query(query, (admin_note, request_id))
-        
-        logger.info(f"درخواست رد شد: {request_id}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"خطا در رد درخواست: {e}")
-        return False
-
-def activate_user(user_id: int) -> bool:
-    """فعال‌سازی کاربر"""
-    try:
-        query = """
-        UPDATE users
-        SET is_active = TRUE
-        WHERE user_id = %s
-        """
-        db.execute_query(query, (user_id,))
-        
-        logger.info(f"کاربر فعال شد: {user_id}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"خطا در فعال‌سازی کاربر: {e}")
-        return False
-
-def deactivate_user(user_id: int) -> bool:
-    """غیرفعال‌سازی کاربر"""
-    try:
-        query = """
-        UPDATE users
-        SET is_active = FALSE
-        WHERE user_id = %s
-        """
-        db.execute_query(query, (user_id,))
-        
-        logger.info(f"کاربر غیرفعال شد: {user_id}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"خطا در غیرفعال‌سازی کاربر: {e}")
-        return False
-
-def is_user_active(user_id: int) -> bool:
-    """بررسی فعال بودن کاربر"""
-    try:
-        query = """
-        SELECT is_active FROM users WHERE user_id = %s
-        """
-        result = db.execute_query(query, (user_id,), fetch=True)
-        
-        return result and result[0]
-        
-    except Exception as e:
-        logger.error(f"خطا در بررسی وضعیت کاربر: {e}")
-        return False
-
-def get_user_info(user_id: int) -> Optional[Dict]:
-    """دریافت اطلاعات کاربر"""
-    try:
-        query = """
-        SELECT username, grade, field, total_study_time, total_sessions
-        FROM users
-        WHERE user_id = %s
-        """
-        result = db.execute_query(query, (user_id,), fetch=True)
-        
-        if result:
-            return {
-                "username": result[0],
-                "grade": result[1],
-                "field": result[2],
-                "total_study_time": result[3],
-                "total_sessions": result[4]
-            }
-        return None
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت اطلاعات کاربر: {e}")
-        return None
-
-async def send_to_all_users(context: ContextTypes.DEFAULT_TYPE, message: str) -> None:
-    """ارسال پیام به همه کاربران"""
-    query = """
-    SELECT user_id FROM registration_requests
-    UNION
-    SELECT user_id FROM users
-    """
-    results = db.execute_query(query, fetchall=True)
-    
-    if not results:
-        return
-    
-    users = [row[0] for row in results]
-    successful = 0
-    
-    for user_id in users:
-        try:
-            await context.bot.send_message(
-                user_id,
-                message,
-                parse_mode=ParseMode.MARKDOWN
-            )
-            successful += 1
-            
-            await asyncio.sleep(0.05)
-            
-        except Exception as e:
-            logger.error(f"خطا در ارسال به کاربر {user_id}: {e}")
-    
-    logger.info(f"✅ پیام به {successful}/{len(users)} کاربر ارسال شد")
-
-async def send_daily_top_ranks(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال ۳ رتبه برتر روز به همه کاربران"""
-    rankings = get_today_rankings()
-    date_str = datetime.now(IRAN_TZ).strftime("%Y/%m/%d")
-    
-    if not rankings or len(rankings) < 3:
-        return
-    
-    message = "🏆 **رتبه‌های برتر امروز**\n\n"
-    message += f"📅 تاریخ: {date_str}\n\n"
-    
-    medals = ["🥇", "🥈", "🥉"]
-    for i, rank in enumerate(rankings[:3]):
-        hours = rank["total_minutes"] // 60
-        mins = rank["total_minutes"] % 60
-        time_display = f"{hours}س {mins}د" if hours > 0 else f"{mins}د"
-        
-        username = rank["username"] or "کاربر"
-        if username == "None":
-            username = "کاربر"
-        
-        message += f"{medals[i]} {username} ({rank['grade']} {rank['field']}): {time_display}\n"
-    
-    message += "\n🎯 فردا هم شرکت کنید!\n"
-    message += "برای ثبت مطالعه جدید: /start"
-    
-    await send_to_all_users(context, message)
-
-def update_user_info(user_id: int, grade: str, field: str) -> bool:
-    """بروزرسانی اطلاعات کاربر"""
-    try:
-        query = """
-        UPDATE users
-        SET grade = %s, field = %s
-        WHERE user_id = %s
-        """
-        rows_updated = db.execute_query(query, (grade, field, user_id))
-        
-        if rows_updated > 0:
-            logger.info(f"✅ اطلاعات کاربر {user_id} بروزرسانی شد: {grade} {field}")
-            return True
-        else:
-            logger.warning(f"⚠️ کاربر {user_id} یافت نشد")
-            return False
-            
-    except Exception as e:
-        logger.error(f"❌ خطا در بروزرسانی اطلاعات کاربر: {e}")
-        return False
-
-# -----------------------------------------------------------
-# مدیریت جلسات مطالعه
-# -----------------------------------------------------------
-
-def start_study_session(user_id: int, subject: str, topic: str, minutes: int) -> Optional[int]:
-    """شروع جلسه مطالعه جدید"""
+def execute_query(query, params=None, fetch=False, fetchall=False, commit=True):
     conn = None
     cursor = None
-    
     try:
-        logger.info(f"🔍 شروع جلسه مطالعه - کاربر: {user_id}, درس: {subject}, مبحث: {topic}, زمان: {minutes} دقیقه")
-        
-        conn = db.get_connection()
+        conn = get_connection()
         cursor = conn.cursor()
-        
-        query_check = "SELECT user_id, is_active FROM users WHERE user_id = %s"
-        cursor.execute(query_check, (user_id,))
-        user_check = cursor.fetchone()
-        
-        logger.info(f"🔍 نتیجه بررسی کاربر {user_id}: {user_check}")
-        
-        if not user_check:
-            logger.error(f"❌ کاربر {user_id} در جدول users وجود ندارد")
-            return None
-        
-        if not user_check[1]:
-            logger.error(f"❌ کاربر {user_id} فعال نیست")
-            return None
-        
-        start_timestamp = int(time.time())
-        date_str, _ = get_iran_time()  # تاریخ شمسی
-        
-        query = """
-        INSERT INTO study_sessions (user_id, subject, topic, minutes, start_time, date)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING session_id
-        """
-        
-        logger.info(f"🔍 در حال ثبت جلسه در دیتابیس...")
-        cursor.execute(query, (user_id, subject, topic, minutes, start_timestamp, date_str))
-        
-        result = cursor.fetchone()
-        
-        if result:
-            session_id = result[0]
-            conn.commit()
-            logger.info(f"✅ جلسه مطالعه شروع شد: {session_id} برای کاربر {user_id}")
-            return session_id
-        
-        logger.error(f"❌ خطا در ثبت جلسه در دیتابیس")
-        return None
-        
+        cursor.execute(query, params or ())
+        if fetch:
+            result = cursor.fetchone()
+            if commit:
+                conn.commit()
+            return result
+        elif fetchall:
+            result = cursor.fetchall()
+            if commit:
+                conn.commit()
+            return result
+        else:
+            if commit:
+                conn.commit()
+            return cursor.rowcount
     except Exception as e:
-        logger.error(f"❌ خطا در شروع جلسه مطالعه: {e}", exc_info=True)
+        logger.error(f"❌ خطا در اجرای کوئری: {e}")
         if conn:
             conn.rollback()
-        return None
-        
+        raise
     finally:
         if cursor:
             cursor.close()
         if conn:
-            db.return_connection(conn)
+            return_connection(conn)
 
+# ==================== توابع کمکی با تاریخ ایران ====================
+def get_iran_now() -> datetime:
+    return datetime.now(IRAN_TZ)
 
-def complete_study_session(session_id: int) -> Optional[Dict]:
-    """اتمام جلسه مطالعه"""
+def get_today_date() -> str:
+    return get_iran_now().strftime("%Y-%m-%d")
+
+def get_today_shamsi() -> str:
+    now = get_iran_now()
+    jdate = jdatetime.datetime.fromgregorian(datetime=now)
+    return jdate.strftime("%Y/%m/%d")
+
+def get_iran_time_str() -> str:
+    return get_iran_now().strftime("%H:%M")
+
+def get_shamsi_date(date_str: str) -> str:
     try:
-        logger.info(f"🔍 تکمیل جلسه مطالعه - session_id: {session_id}")
-        
-        end_timestamp = int(time.time())
-        
-        query_check = """
-        SELECT user_id, subject, topic, minutes, start_time, completed, date 
-        FROM study_sessions 
-        WHERE session_id = %s
-        """
-        session_check = db.execute_query(query_check, (session_id,), fetch=True)
-        
-        if not session_check:
-            logger.error(f"❌ جلسه {session_id} یافت نشد")
-            return None
-        
-        user_id, subject, topic, planned_minutes, start_time, completed, session_date = session_check
-        logger.info(f"🔍 اطلاعات جلسه: کاربر={user_id}, درس={subject}, تاریخ={session_date}, تکمیل شده={completed}")
-        
-        if completed:
-            logger.warning(f"⚠️ جلسه {session_id} قبلاً تکمیل شده است")
-            return None
-        
-        actual_seconds = end_timestamp - start_time
-        actual_minutes = max(1, actual_seconds // 60)
-        
-        logger.info(f"⏱ زمان برنامه‌ریزی شده: {planned_minutes} دقیقه")
-        logger.info(f"⏱ زمان واقعی: {actual_minutes} دقیقه ({actual_seconds} ثانیه)")
-        
-        final_minutes = min(actual_minutes, planned_minutes)
-        
-        logger.info(f"✅ زمان نهایی محاسبه: {final_minutes} دقیقه")
-        
-        query = """
-        UPDATE study_sessions
-        SET end_time = %s, completed = TRUE, minutes = %s
-        WHERE session_id = %s AND completed = FALSE
-        RETURNING user_id, subject, topic, start_time, date
-        """
-        
-        logger.info(f"🔍 در حال بروزرسانی جلسه به تکمیل شده...")
-        result = db.execute_query(query, (end_timestamp, final_minutes, session_id), fetch=True)
-        
-        if not result:
-            logger.error(f"❌ بروزرسانی جلسه ناموفق بود")
-            return None
-        
-        user_id, subject, topic, start_time, session_date = result
-        
-        try:
-            query = """
-            UPDATE users
-            SET 
-                total_study_time = total_study_time + %s,
-                total_sessions = total_sessions + 1
-            WHERE user_id = %s
-            """
-            rows_updated = db.execute_query(query, (final_minutes, user_id))
-            logger.info(f"✅ آمار کاربر {user_id} بروزرسانی شد: {rows_updated} رکورد")
-        except Exception as e:
-            logger.warning(f"⚠️ خطا در بروزرسانی آمار کاربر {user_id}: {e}")
-        
-        try:
-            # تبدیل تاریخ شمسی به میلادی برای دیتابیس
-            if '/' in session_date:
-                # تاریخ شمسی است، تبدیل کن
-                session_date_formatted = convert_jalali_to_gregorian(session_date)
-                logger.info(f"📅 تاریخ شمسی {session_date} → میلادی {session_date_formatted}")
-            else:
-                # تاریخ میلادی است
-                session_date_formatted = session_date
-                
-            logger.info(f"📅 بروزرسانی daily_rankings برای تاریخ: {session_date_formatted}")
-            
-            query = """
-            INSERT INTO daily_rankings (user_id, date, total_minutes)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (user_id, date) DO UPDATE SET
-                total_minutes = daily_rankings.total_minutes + EXCLUDED.total_minutes
-            """
-            db.execute_query(query, (user_id, session_date_formatted, final_minutes))
-            logger.info(f"✅ رتبه‌بندی روزانه برای کاربر {user_id} بروزرسانی شد")
-        except Exception as e:
-            logger.warning(f"⚠️ خطا در بروزرسانی رتبه‌بندی: {e}", exc_info=True)
-        
-        session_data = {
-            "user_id": user_id,
-            "subject": subject,
-            "topic": topic,
-            "minutes": final_minutes,
-            "planned_minutes": planned_minutes,
-            "actual_seconds": actual_seconds,
-            "start_time": start_time,
-            "end_time": end_timestamp,
-            "session_id": session_id,
-            "date": session_date
-        }
-        
-        logger.info(f"✅ جلسه مطالعه تکمیل شد: {session_id} - زمان: {final_minutes} دقیقه")
-        return session_data
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در تکمیل جلسه مطالعه: {e}", exc_info=True)
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        dt = IRAN_TZ.localize(dt)
+        jdate = jdatetime.datetime.fromgregorian(datetime=dt)
+        return jdate.strftime("%Y/%m/%d")
+    except:
+        return date_str
+
+def format_time_hours_minutes(minutes: int) -> str:
+    if minutes < 60:
+        return f"{minutes} دقیقه"
+    hours = minutes // 60
+    mins = minutes % 60
+    if mins == 0:
+        return f"{hours} ساعت"
+    return f"{hours} ساعت و {mins} دقیقه"
+
+def convert_persian_to_int(text: str) -> int:
+    persian_to_english = {
+        '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+        '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9'
+    }
+    result = text
+    for persian, english in persian_to_english.items():
+        result = result.replace(persian, english)
+    try:
+        return int(result)
+    except:
         return None
-def get_user_sessions(user_id: int, limit: int = 10) -> List[Dict]:
-    """دریافت جلسات اخیر کاربر"""
+
+def time_to_minutes(time_str: str) -> int:
     try:
-        query = """
-        SELECT session_id, subject, topic, minutes, date, start_time, completed
-        FROM study_sessions
-        WHERE user_id = %s
-        ORDER BY start_time DESC
-        LIMIT %s
-        """
-        
-        results = db.execute_query(query, (user_id, limit), fetchall=True)
-        
-        sessions = []
-        if results:
-            for row in results:
-                sessions.append({
-                    "session_id": row[0],
-                    "subject": row[1],
-                    "topic": row[2],
-                    "minutes": row[3],
-                    "date": row[4],
-                    "start_time": row[5],
-                    "completed": row[6]
-                })
-        
-        return sessions
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت جلسات کاربر: {e}")
-        return []
+        parts = time_str.split(":")
+        return int(parts[0]) * 60 + int(parts[1])
+    except:
+        return 0
 
-# -----------------------------------------------------------
-# سیستم رتبه‌بندی
-# -----------------------------------------------------------
+def minutes_to_time(minutes: int) -> str:
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours:02d}:{mins:02d}"
 
-def get_today_rankings() -> List[Dict]:
-    """دریافت رتبه‌بندی امروز"""
+def get_iran_date_for_db() -> str:
+    return get_today_date()
+
+def parse_time_slot(time_str: str) -> Tuple[Optional[str], Optional[str]]:
+    """پارس کردن بازه زمانی مثل ۸-۱۰ یا ۸:۰۰-۱۰:۰۰"""
     try:
-        # دریافت تاریخ امروز در فرمت دیتابیس
-        date_str_db = get_db_date()
-        date_str_display, time_str = get_iran_time()
+        time_str = time_str.strip()
+        time_str = time_str.replace(" ", "")
+        for p, e in {'۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+                     '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9'}.items():
+            time_str = time_str.replace(p, e)
         
-        logger.info(f"🔍 دریافت رتبه‌بندی برای تاریخ: {date_str_db}")
+        parts = time_str.split("-")
+        if len(parts) != 2:
+            return None, None
         
-        query = """
-        SELECT u.user_id, u.username, u.grade, u.field, dr.total_minutes
-        FROM daily_rankings dr
-        JOIN users u ON dr.user_id = u.user_id
-        WHERE dr.date = %s AND u.is_active = TRUE
-        ORDER BY dr.total_minutes DESC
-        LIMIT 20
-        """
+        start = parts[0].strip()
+        end = parts[1].strip()
         
-        results = db.execute_query(query, (date_str_db,), fetchall=True)
+        if ":" not in start:
+            start = f"{int(start):02d}:00"
+        if ":" not in end:
+            end = f"{int(end):02d}:00"
         
-        logger.info(f"🔍 تعداد رکوردهای یافت شده: {len(results) if results else 0}")
+        start_h, start_m = map(int, start.split(":"))
+        end_h, end_m = map(int, end.split(":"))
         
-        rankings = []
-        if results:
-            for row in results:
-                rankings.append({
-                    "user_id": row[0],
-                    "username": row[1],
-                    "grade": row[2],
-                    "field": row[3],
-                    "total_minutes": row[4]
-                })
-                logger.info(f"  👤 {row[0]}: {row[4]} دقیقه")
+        if start_h < 0 or start_h > 23 or end_h < 0 or end_h > 23:
+            return None, None
+        if start_m < 0 or start_m > 59 or end_m < 0 or end_m > 59:
+            return None, None
         
-        return rankings
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت رتبه‌بندی: {e}", exc_info=True)
-        return []
+        return start, end
+    except:
+        return None, None
 
-def get_user_rank_today(user_id: int) -> Tuple[Optional[int], Optional[int]]:
-    """دریافت رتبه و زمان کاربر در امروز"""
-    try:
-        date_str, _ = get_iran_time()
-        
-        query = """
-        SELECT total_minutes FROM daily_rankings
-        WHERE user_id = %s AND date = %s
+# ==================== ایجاد جداول دیتابیس ====================
+def create_tables():
+    queries = [
         """
-        result = db.execute_query(query, (user_id, date_str), fetch=True)
-        
-        if not result:
-            return None, 0
-        
-        user_minutes = result[0]
-        
-        query = """
-        SELECT COUNT(*) FROM daily_rankings
-        WHERE date = %s AND total_minutes > %s
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            telegram_id VARCHAR(50) UNIQUE NOT NULL,
+            username VARCHAR(100),
+            full_name VARCHAR(200),
+            goal VARCHAR(50),
+            grade VARCHAR(50),
+            field VARCHAR(50),
+            exam_date DATE,
+            study_hours_per_week INTEGER,
+            peak_time VARCHAR(20),
+            learning_style VARCHAR(30),
+            focus_duration INTEGER DEFAULT 45,
+            break_duration INTEGER DEFAULT 10,
+            weak_subjects JSONB,
+            strong_subjects JSONB,
+            daily_schedule JSONB,
+            is_active BOOLEAN DEFAULT TRUE,
+            is_onboarded BOOLEAN DEFAULT FALSE,
+            current_phase INTEGER DEFAULT 0,
+            plan_level INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_activity_date DATE,
+            version INTEGER DEFAULT 1
+        )
+        """,
         """
-        result = db.execute_query(query, (date_str, user_minutes), fetch=True)
-        
-        rank = result[0] + 1 if result else 1
-        return rank, user_minutes
-        
-    except Exception as e:
-        logger.error(f"خطا در محاسبه رتبه کاربر: {e}")
-        return None, 0
-
-# -----------------------------------------------------------
-# مدیریت فایل‌ها
-# -----------------------------------------------------------
-
-def add_file(grade: str, field: str, subject: str, topic: str, 
-             description: str, telegram_file_id: str, file_name: str,
-             file_size: int, mime_type: str, uploader_id: int) -> Optional[Dict]:
-    """افزودن فایل جدید به دیتابیس"""
-    conn = None
-    cursor = None
+        CREATE TABLE IF NOT EXISTS subject_status (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            subject VARCHAR(50) NOT NULL,
+            level VARCHAR(20),
+            mastery_score FLOAT DEFAULT 0,
+            total_sessions INTEGER DEFAULT 0,
+            completed_sessions INTEGER DEFAULT 0,
+            total_study_minutes INTEGER DEFAULT 0,
+            avg_score FLOAT,
+            best_score FLOAT,
+            worst_score FLOAT,
+            current_chapter INTEGER,
+            current_topic VARCHAR(200),
+            completed_chapters JSONB,
+            completed_topics JSONB,
+            weak_chapters JSONB,
+            weak_topics JSONB,
+            strong_topics JSONB,
+            progress FLOAT DEFAULT 0,
+            improvement_rate FLOAT DEFAULT 0,
+            avg_session_duration INTEGER,
+            best_time VARCHAR(20),
+            last_studied DATE,
+            last_score FLOAT,
+            version INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, subject)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            date DATE NOT NULL,
+            session_id INTEGER,
+            subject VARCHAR(50) NOT NULL,
+            topic VARCHAR(200),
+            activity_type VARCHAR(30),
+            planned_duration INTEGER,
+            actual_duration INTEGER,
+            start_time TIME,
+            end_time TIME,
+            score FLOAT,
+            status VARCHAR(20),
+            difficulty VARCHAR(20),
+            focus_rating INTEGER CHECK (focus_rating BETWEEN 1 AND 5),
+            energy_level INTEGER CHECK (energy_level BETWEEN 1 AND 5),
+            mood VARCHAR(20),
+            distractions JSONB,
+            notes TEXT,
+            break_duration INTEGER,
+            break_time TIME,
+            pages_count INTEGER,
+            test_count INTEGER,
+            correct_count INTEGER,
+            part_order INTEGER DEFAULT 0,
+            version INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_archived BOOLEAN DEFAULT FALSE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS advisory_rules (
+            id SERIAL PRIMARY KEY,
+            topic VARCHAR(50) NOT NULL,
+            label VARCHAR(50),
+            condition TEXT,
+            advice TEXT NOT NULL,
+            priority INTEGER DEFAULT 5,
+            time VARCHAR(20),
+            frequency VARCHAR(30),
+            days JSONB,
+            applicable_for JSONB,
+            subjects JSONB,
+            is_active BOOLEAN DEFAULT TRUE,
+            is_system_generated BOOLEAN DEFAULT FALSE,
+            usage_count INTEGER DEFAULT 0,
+            success_rate FLOAT DEFAULT 0,
+            last_used TIMESTAMP,
+            created_by BIGINT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            version INTEGER DEFAULT 1
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS study_sessions (
+            session_id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            date VARCHAR(20),
+            total_parts INT,
+            completed_parts INT DEFAULT 0,
+            edit_count INT DEFAULT 0,
+            max_edits INT DEFAULT 2,
+            confirmed BOOLEAN DEFAULT FALSE,
+            is_finished BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            time_slots TEXT,
+            topics TEXT,
+            archived BOOLEAN DEFAULT FALSE,
+            plan_level INT DEFAULT 0,
+            UNIQUE(user_id, date)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS study_parts (
+            part_id SERIAL PRIMARY KEY,
+            session_id INT REFERENCES study_sessions(session_id),
+            part_number INT,
+            title VARCHAR(200),
+            grade INT,
+            planned_minutes INT,
+            actual_minutes INT DEFAULT 0,
+            time_slot VARCHAR(50),
+            completed BOOLEAN DEFAULT FALSE,
+            is_hardest BOOLEAN DEFAULT FALSE,
+            is_easiest BOOLEAN DEFAULT FALSE,
+            started_at TIMESTAMP,
+            completed_at TIMESTAMP,
+            pages INT DEFAULT 0,
+            planned_start_time TIME,
+            planned_end_time TIME,
+            actual_start_time TIMESTAMP,
+            actual_end_time TIMESTAMP,
+            is_fixed_time BOOLEAN DEFAULT FALSE,
+            delay_minutes INT DEFAULT 0,
+            alert_sent BOOLEAN DEFAULT FALSE,
+            reason TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS user_insights (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            analysis_date DATE,
+            best_time VARCHAR(20),
+            weakest_subject VARCHAR(50),
+            strongest_subject VARCHAR(50),
+            avg_daily_hours FLOAT,
+            completion_rate FLOAT,
+            time_patterns JSONB,
+            performance_patterns JSONB,
+            quality_patterns JSONB,
+            burnout_risk VARCHAR(20),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, analysis_date)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS daily_alerts (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            part_id INTEGER REFERENCES study_parts(part_id) ON DELETE CASCADE,
+            alert_time TIMESTAMP,
+            message TEXT,
+            sent BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS personalized_plans (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            date DATE NOT NULL,
+            daily_plan JSONB NOT NULL,
+            reasoning JSONB,
+            expected_outcome JSONB,
+            applied_advice_ids JSONB,
+            is_active BOOLEAN DEFAULT TRUE,
+            was_completed BOOLEAN DEFAULT FALSE,
+            completion_report JSONB,
+            version INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, date)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            role VARCHAR(20) NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS user_quota (
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE PRIMARY KEY,
+            daily_messages INTEGER DEFAULT 0,
+            last_reset DATE DEFAULT CURRENT_DATE,
+            plan_type VARCHAR(20) DEFAULT 'trial',
+            plan_expiry DATE,
+            UNIQUE(user_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS change_history (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            session_id INTEGER REFERENCES study_sessions(session_id),
+            part_id INTEGER REFERENCES study_parts(part_id),
+            action_type VARCHAR(50),
+            previous_data JSONB,
+            new_data JSONB,
+            extra_data JSONB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_reverted BOOLEAN DEFAULT FALSE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS pending_payments (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            photo_file_id VARCHAR(200),
+            caption TEXT,
+            status VARCHAR(20) DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    ]
+    
+    for query in queries:
+        try:
+            execute_query(query)
+        except Exception as e:
+            logger.warning(f"خطا در ایجاد جدول: {e}")
     
     try:
-        logger.info(f"🔍 شروع اضافه کردن فایل به دیتابیس:")
-        logger.info(f"  🎓 پایه: {grade}")
-        logger.info(f"  🧪 رشته: {field}")
-        logger.info(f"  📚 درس: {subject}")
-        logger.info(f"  📄 نام فایل: {file_name}")
-        logger.info(f"  📦 حجم: {file_size}")
-        logger.info(f"  👤 آپلودکننده: {uploader_id}")
+        execute_query("""
+            CREATE OR REPLACE FUNCTION update_version()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.version = OLD.version + 1;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+        """)
         
-        upload_date, time_str = get_iran_time()
+        execute_query("""
+            DROP TRIGGER IF EXISTS update_users_version ON users;
+            CREATE TRIGGER update_users_version
+            BEFORE UPDATE ON users
+            FOR EACH ROW
+            EXECUTE FUNCTION update_version();
+        """)
         
-        conn = db.get_connection()
+        execute_query("""
+            DROP TRIGGER IF EXISTS update_subject_version ON subject_status;
+            CREATE TRIGGER update_subject_version
+            BEFORE UPDATE ON subject_status
+            FOR EACH ROW
+            EXECUTE FUNCTION update_version();
+        """)
+    except Exception as e:
+        logger.warning(f"خطا در ایجاد تریگر: {e}")
+    
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS idx_users_telegram ON users(telegram_id)",
+        "CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active)",
+        "CREATE INDEX IF NOT EXISTS idx_subject_user ON subject_status(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_user ON activity_log(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_date ON activity_log(date)",
+        "CREATE INDEX IF NOT EXISTS idx_advice_active ON advisory_rules(is_active)",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON study_sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_parts_session ON study_parts(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_insights_user ON user_insights(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_alerts_user ON daily_alerts(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_messages(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_change_user ON change_history(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_payments_user ON pending_payments(user_id)"
+    ]
+    
+    for idx in indexes:
+        try:
+            execute_query(idx)
+        except:
+            pass
+    
+    logger.info("✅ جداول دیتابیس ایجاد شدند")
+
+# ==================== کیبوردها ====================
+
+def get_main_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        ["📝 برنامه امروز", "💬 چت با AI"],
+        ["📊 گزارش", "📅 تقویم"],
+        ["💰 خرید اشتراک", "👤 پروفایل"],
+        ["🔙 برگشت به حالت قبل"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_plan_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        ["✏️ ویرایش ترتیب", "➕ اضافه کردن"],
+        ["🔄 بازنشانی", "🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_part_buttons_initial(parts: List[Dict]) -> ReplyKeyboardMarkup:
+    keyboard = []
+    for part in parts:
+        status = "⬜" if not part.get("completed") else "✅"
+        grade_emoji = GRADE_RULES.get(part.get("grade", 3), GRADE_RULES[3])["emoji"]
+        title = part.get("title", "بدون عنوان")
+        planned_start = part.get("planned_start_time") or part.get("planned_start") or ""
+        planned_end = part.get("planned_end_time") or part.get("planned_end") or ""
+        time_info = ""
+        if planned_start and planned_end:
+            time_info = f" {planned_start}-{planned_end}"
+        elif part.get("time_slot"):
+            time_info = f" {part['time_slot']}"
+        text = f"{status} {grade_emoji} {title} ({part.get('planned_minutes', 0)}د){time_info} ↕️ [{part.get('part_id', 0)}]"
+        keyboard.append([text])
+    keyboard.append(["✅ تایید برنامه"])
+    keyboard.append(["🔙 بازگشت"])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_part_buttons_final(parts: List[Dict], show_date: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = []
+    if not parts:
+        keyboard.append(["🔙 بازگشت"])
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    sorted_parts = sorted(parts, key=lambda x: x.get("part_number", 0))
+    for part in sorted_parts:
+        part_id = part.get("part_id")
+        if not part_id:
+            continue
+        status = "✅" if part.get("completed", False) else "⬜"
+        grade_emoji = GRADE_RULES.get(part.get("grade", 3), GRADE_RULES[3])["emoji"]
+        title = part.get("title", "بدون عنوان")
+        planned_start = part.get("planned_start_time") or part.get("planned_start") or ""
+        planned_end = part.get("planned_end_time") or part.get("planned_end") or ""
+        time_info = ""
+        if planned_start and planned_end:
+            time_info = f" {planned_start}-{planned_end}"
+        elif part.get("time_slot"):
+            time_info = f" {part['time_slot']}"
+        fixed_tag = " 🔒" if part.get("is_fixed_time", False) else ""
+        text = f"{status} {grade_emoji} {title} ({part.get('planned_minutes', 0)}د){time_info}{fixed_tag} [{part_id}]"
+        keyboard.append([text])
+    keyboard.append(["➕ اضافه کردن فعالیت"])
+    keyboard.append(["✏️ ویرایش برنامه"])
+    keyboard.append(["✅ اتمام برنامه"])
+    keyboard.append(["🔙 برگشت به حالت قبل", "🔙 بازگشت"])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_part_detail_buttons(part_id: int, is_timer_running: bool = False, elapsed_seconds: int = 0) -> ReplyKeyboardMarkup:
+    keyboard = []
+    if is_timer_running:
+        keyboard.append(["⏹ توقف", "✅ تکمیل"])
+    else:
+        if elapsed_seconds > 0:
+            keyboard.append(["▶️ ادامه تایمر", "✅ تکمیل"])
+        else:
+            keyboard.append(["⏱ تایمر", "✅ تکمیل"])
+    keyboard.append(["🗑 حذف پارت"])
+    keyboard.append(["🔙 بازگشت"])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_edit_menu_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        ["✏️ ویرایش دستی"],
+        ["✏️ ویرایش آزاد (چت با AI)"],
+        ["🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_calendar_keyboard(dates: List[str]) -> ReplyKeyboardMarkup:
+    keyboard = []
+    for date_str in dates:
+        shamsi = get_shamsi_date(date_str)
+        keyboard.append([f"📅 {shamsi}"])
+    keyboard.append(["🔙 بازگشت"])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_add_activity_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        ["📖 مطالعه", "📝 تست"],
+        ["📚 خلاصه‌نویسی", "🔁 مرور"],
+        ["🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_duration_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        ["⏱ ۲۰ دقیقه", "⏱ ۳۰ دقیقه"],
+        ["⏱ ۴۵ دقیقه", "⏱ ۶۰ دقیقه"],
+        ["✏️ دلخواه"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_ai_chat_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        ["🔄 مکالمه جدید", "🔙 بازگشت به منو"],
+        ["📊 مصرف امروز"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_build_plan_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        ["🧠 ساخت با AI", "✏️ ساخت دستی"],
+        ["🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_confirm_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        ["✅ تایید تغییرات", "❌ لغو تغییرات"],
+        ["🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# ==================== کیبوردهای تایید تغییرات ====================
+
+def get_confirm_change_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد تایید یا رد تغییرات"""
+    keyboard = [
+        ["✅ تایید تغییر", "❌ رد تغییر"],
+        ["🔙 بازگشت"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_confirm_clear_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد تایید یا رد پاک کردن همه"""
+    keyboard = [
+        ["🗑 بله، همه را پاک کن"],
+        ["❌ نه، لغو"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_confirm_delete_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد تایید یا رد حذف پارت"""
+    keyboard = [
+        ["✅ بله، حذف کن"],
+        ["❌ نه، لغو"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# ==================== توابع کاربری ====================
+def get_user_id_by_telegram(telegram_id: int) -> Optional[int]:
+    result = execute_query(
+        "SELECT id FROM users WHERE telegram_id = %s",
+        (str(telegram_id),),
+        fetch=True
+    )
+    return result[0] if result else None
+
+def get_user_data(telegram_id: int) -> Optional[Dict]:
+    result = execute_query(
+        """SELECT id, telegram_id, username, full_name, goal, grade, field, 
+                  is_onboarded, current_phase, weak_subjects, strong_subjects,
+                  study_hours_per_week, peak_time, learning_style, focus_duration,
+                  break_duration, plan_level, created_at, version
+           FROM users WHERE telegram_id = %s""",
+        (str(telegram_id),),
+        fetch=True
+    )
+    if not result:
+        return None
+    return {
+        "id": result[0],
+        "telegram_id": result[1],
+        "username": result[2],
+        "full_name": result[3],
+        "goal": result[4],
+        "grade": result[5],
+        "field": result[6],
+        "is_onboarded": result[7],
+        "current_phase": result[8],
+        "weak_subjects": result[9] or [],
+        "strong_subjects": result[10] or [],
+        "study_hours_per_week": result[11],
+        "peak_time": result[12],
+        "learning_style": result[13],
+        "focus_duration": result[14] or 45,
+        "break_duration": result[15] or 10,
+        "plan_level": result[16] or 0,
+        "created_at": result[17],
+        "version": result[18] or 1
+    }
+
+def get_plan_by_date(user_id: int, date_str: str) -> Optional[Dict]:
+    query = """
+    SELECT s.session_id, s.total_parts, s.completed_parts, s.edit_count, 
+           s.max_edits, s.confirmed, s.time_slots, s.topics, s.is_finished, s.archived, s.plan_level
+    FROM study_sessions s
+    WHERE s.user_id = %s AND s.date = %s AND s.archived = FALSE
+    ORDER BY s.created_at DESC
+    LIMIT 1
+    """
+    result = execute_query(query, (user_id, date_str), fetch=True)
+    if not result:
+        return None
+    
+    session_id, total_parts, completed_parts, edit_count, max_edits, confirmed, time_slots, topics, is_finished, archived, plan_level = result
+    
+    query_parts = """
+    SELECT part_id, part_number, title, grade, planned_minutes, actual_minutes,
+           time_slot, completed, is_hardest, is_easiest, pages,
+           to_char(started_at, 'HH24:MI') as start_time,
+           to_char(completed_at, 'HH24:MI') as end_time,
+           planned_start_time, planned_end_time,
+           actual_start_time, actual_end_time, is_fixed_time, delay_minutes,
+           reason, alert_sent
+    FROM study_parts
+    WHERE session_id = %s
+    ORDER BY part_number
+    """
+    parts_result = execute_query(query_parts, (session_id,), fetchall=True)
+    
+    parts = []
+    for row in parts_result:
+        planned_start = row[13]
+        planned_end = row[14]
+        if planned_start and hasattr(planned_start, 'strftime'):
+            planned_start = planned_start.strftime('%H:%M')
+        if planned_end and hasattr(planned_end, 'strftime'):
+            planned_end = planned_end.strftime('%H:%M')
+        parts.append({
+            "part_id": row[0],
+            "part_number": row[1],
+            "title": row[2],
+            "grade": row[3],
+            "planned_minutes": row[4],
+            "actual_minutes": row[5] or 0,
+            "time_slot": row[6] or "",
+            "completed": row[7],
+            "is_hardest": row[8],
+            "is_easiest": row[9],
+            "pages": row[10] or 0,
+            "start_time": row[11] or "",
+            "end_time": row[12] or "",
+            "planned_start_time": planned_start or "",
+            "planned_end_time": planned_end or "",
+            "planned_start": planned_start or "",
+            "planned_end": planned_end or "",
+            "actual_start": row[15],
+            "actual_end": row[16],
+            "is_fixed_time": row[17] or False,
+            "delay_minutes": row[18] or 0,
+            "reason": row[19] or "",
+            "alert_sent": row[20] or False
+        })
+    
+    if isinstance(time_slots, str):
+        try:
+            time_slots = json.loads(time_slots)
+        except:
+            time_slots = []
+    if isinstance(topics, str):
+        try:
+            topics = json.loads(topics)
+        except:
+            topics = []
+    
+    return {
+        "session_id": session_id,
+        "total_parts": total_parts,
+        "completed_parts": completed_parts,
+        "edit_count": edit_count,
+        "max_edits": max_edits,
+        "confirmed": confirmed,
+        "time_slots": time_slots,
+        "topics": topics,
+        "parts": parts,
+        "date": date_str,
+        "is_finished": is_finished,
+        "archived": archived,
+        "plan_level": plan_level or 0
+    }
+
+def get_today_activities(user_id: int) -> List[Dict]:
+    today = get_today_date()
+    results = execute_query(
+        """SELECT id, subject, topic, activity_type, planned_duration, actual_duration,
+                  start_time, end_time, score, status, difficulty, focus_rating,
+                  energy_level, mood, distractions, notes, pages_count, test_count,
+                  correct_count, part_order, created_at
+           FROM activity_log 
+           WHERE user_id = %s AND date = %s AND is_archived = FALSE
+           ORDER BY part_order ASC, created_at ASC""",
+        (user_id, today),
+        fetchall=True
+    )
+    return [
+        {
+            "id": r[0],
+            "subject": r[1],
+            "topic": r[2],
+            "activity_type": r[3],
+            "planned_duration": r[4] or 0,
+            "actual_duration": r[5] or 0,
+            "start_time": r[6],
+            "end_time": r[7],
+            "score": r[8],
+            "status": r[9] or "pending",
+            "difficulty": r[10],
+            "focus_rating": r[11],
+            "energy_level": r[12],
+            "mood": r[13],
+            "distractions": r[14] or [],
+            "notes": r[15],
+            "pages_count": r[16] or 0,
+            "test_count": r[17] or 0,
+            "correct_count": r[18] or 0,
+            "part_order": r[19] or 0,
+            "created_at": r[20]
+        }
+        for r in results
+    ] if results else []
+
+def get_recent_dates(user_id: int, days: int = 10) -> List[str]:
+    results = execute_query(
+        """SELECT DISTINCT date FROM study_sessions 
+           WHERE user_id = %s 
+           ORDER BY date DESC LIMIT %s""",
+        (user_id, days),
+        fetchall=True
+    )
+    return [r[0] for r in results] if results else []
+
+def get_active_advice(user_id: int) -> List[Dict]:
+    results = execute_query(
+        """SELECT id, topic, label, condition, advice, priority, time, frequency,
+                  days, subjects
+           FROM advisory_rules 
+           WHERE is_active = TRUE 
+           ORDER BY priority DESC""",
+        fetchall=True
+    )
+    return [
+        {
+            "id": r[0],
+            "topic": r[1],
+            "label": r[2],
+            "condition": r[3],
+            "advice": r[4],
+            "priority": r[5],
+            "time": r[6],
+            "frequency": r[7],
+            "days": r[8] or [],
+            "subjects": r[9] or []
+        }
+        for r in results
+    ] if results else []
+
+def get_activity_by_id(activity_id: int) -> Optional[Dict]:
+    result = execute_query(
+        """SELECT id, user_id, subject, topic, activity_type, planned_duration, 
+                  actual_duration, status, score, part_order
+           FROM activity_log WHERE id = %s""",
+        (activity_id,),
+        fetch=True
+    )
+    if not result:
+        return None
+    return {
+        "id": result[0],
+        "user_id": result[1],
+        "subject": result[2],
+        "topic": result[3],
+        "activity_type": result[4],
+        "planned_duration": result[5] or 0,
+        "actual_duration": result[6] or 0,
+        "status": result[7] or "pending",
+        "score": result[8],
+        "part_order": result[9] or 0
+    }
+
+def get_subject_status(user_id: int) -> List[Dict]:
+    results = execute_query(
+        """SELECT subject, level, avg_score, total_sessions, completed_sessions,
+                  total_study_minutes, progress, last_studied, last_score
+           FROM subject_status 
+           WHERE user_id = %s
+           ORDER BY total_study_minutes DESC""",
+        (user_id,),
+        fetchall=True
+    )
+    return [
+        {
+            "subject": r[0],
+            "level": r[1],
+            "avg_score": r[2] or 0,
+            "total_sessions": r[3] or 0,
+            "completed_sessions": r[4] or 0,
+            "total_study_minutes": r[5] or 0,
+            "progress": r[6] or 0,
+            "last_studied": r[7],
+            "last_score": r[8]
+        }
+        for r in results
+    ] if results else []
+
+def get_user_insights(user_id: int) -> Optional[Dict]:
+    result = execute_query(
+        """SELECT best_time, weakest_subject, strongest_subject, avg_daily_hours,
+                  completion_rate, time_patterns, performance_patterns, quality_patterns,
+                  burnout_risk
+           FROM user_insights 
+           WHERE user_id = %s 
+           ORDER BY analysis_date DESC LIMIT 1""",
+        (user_id,),
+        fetch=True
+    )
+    if not result:
+        return None
+    return {
+        "best_time": result[0] or "نامشخص",
+        "weakest_subject": result[1] or "نامشخص",
+        "strongest_subject": result[2] or "نامشخص",
+        "avg_daily_hours": result[3] or 0,
+        "completion_rate": result[4] or 0,
+        "time_patterns": result[5] or {},
+        "performance_patterns": result[6] or {},
+        "quality_patterns": result[7] or {},
+        "burnout_risk": result[8] or "low"
+    }
+
+def get_last_n_days_data(user_id: int, days: int = 7) -> List[Dict]:
+    results = execute_query(
+        """SELECT date, total_parts, completed_parts, plan_level
+           FROM study_sessions 
+           WHERE user_id = %s 
+           ORDER BY date DESC LIMIT %s""",
+        (user_id, days),
+        fetchall=True
+    )
+    return [
+        {
+            "date": r[0],
+            "total_parts": r[1] or 0,
+            "completed_parts": r[2] or 0,
+            "plan_level": r[3] or 0
+        }
+        for r in results
+    ] if results else []
+
+# ==================== توابع Undo بهبودیافته ====================
+
+def save_change_history(user_id: int, session_id: int, part_id: int, action_type: str, 
+                        previous_data: Dict, new_data: Dict = None, extra_data: Dict = None) -> None:
+    """ذخیره تغییرات برای قابلیت Undo با اطلاعات کامل"""
+    try:
+        def serialize_value(val):
+            if hasattr(val, 'isoformat'):
+                return val.isoformat()
+            return val
+        
+        prev_serialized = {}
+        for k, v in previous_data.items():
+            if k not in ["part_id", "session_id"]:
+                prev_serialized[k] = serialize_value(v)
+        
+        new_serialized = {}
+        if new_data:
+            for k, v in new_data.items():
+                new_serialized[k] = serialize_value(v)
+        
+        extra_serialized = {}
+        if extra_data:
+            for k, v in extra_data.items():
+                extra_serialized[k] = serialize_value(v)
+        
+        execute_query(
+            """INSERT INTO change_history (user_id, session_id, part_id, action_type, previous_data, new_data, extra_data)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (user_id, session_id, part_id, action_type, json.dumps(prev_serialized), json.dumps(new_serialized), json.dumps(extra_serialized))
+        )
+        logger.info(f"✅ تغییر ذخیره شد: {action_type} - part_id: {part_id}")
+    except Exception as e:
+        logger.error(f"خطا در ذخیره تغییرات: {e}")
+
+def get_last_change(user_id: int) -> Optional[Dict]:
+    """دریافت آخرین تغییر برای Undo با داده‌های کامل"""
+    result = execute_query(
+        """SELECT id, session_id, part_id, action_type, previous_data, new_data, extra_data, created_at
+           FROM change_history 
+           WHERE user_id = %s AND is_reverted = FALSE
+           ORDER BY created_at DESC LIMIT 1""",
+        (user_id,),
+        fetch=True
+    )
+    if not result:
+        return None
+    
+    prev_data = {}
+    new_data = {}
+    extra_data = {}
+    
+    try:
+        if result[4]:
+            prev_data = json.loads(result[4]) if isinstance(result[4], str) else result[4]
+    except:
+        pass
+    
+    try:
+        if result[5]:
+            new_data = json.loads(result[5]) if isinstance(result[5], str) else result[5]
+    except:
+        pass
+    
+    try:
+        if result[6]:
+            extra_data = json.loads(result[6]) if isinstance(result[6], str) else result[6]
+    except:
+        pass
+    
+    return {
+        "id": result[0],
+        "session_id": result[1],
+        "part_id": result[2],
+        "action_type": result[3],
+        "previous_data": prev_data,
+        "new_data": new_data,
+        "extra_data": extra_data,
+        "created_at": result[7]
+    }
+
+def get_all_changes(user_id: int, limit: int = 10) -> List[Dict]:
+    """دریافت لیست تغییرات برای نمایش به کاربر"""
+    results = execute_query(
+        """SELECT id, action_type, created_at, is_reverted
+           FROM change_history 
+           WHERE user_id = %s
+           ORDER BY created_at DESC LIMIT %s""",
+        (user_id, limit),
+        fetchall=True
+    )
+    
+    if not results:
+        return []
+    
+    action_names = {
+        "add": "➕ اضافه کردن",
+        "delete": "🗑 حذف",
+        "update": "✏️ ویرایش",
+        "complete": "✅ تکمیل",
+        "move": "↕️ جابه‌جایی",
+        "clear": "🗑 پاک کردن همه"
+    }
+    
+    return [
+        {
+            "id": r[0],
+            "action_type": action_names.get(r[1], r[1]),
+            "created_at": r[2],
+            "is_reverted": r[3]
+        }
+        for r in results
+    ]
+
+def revert_change(change_id: int) -> bool:
+    """برگشت یک تغییر"""
+    try:
+        execute_query(
+            "UPDATE change_history SET is_reverted = TRUE WHERE id = %s",
+            (change_id,)
+        )
+        return True
+    except:
+        return False
+
+# ==================== توابع چت AI و سقف مصرف ====================
+
+AI_CHAT_SYSTEM_PROMPT = """تو دستیار مطالعه‌ی هوشمند هستی. فقط درباره‌ی:
+- درس خوندن و تکنیک‌های مطالعه
+- برنامه‌ریزی تحصیلی
+- مدیریت زمان
+- انگیزه‌دهی
+- مشاوره تحصیلی
+
+صحبت کن. پاسخ‌ها مختصر، مفید و به فارسی روان باشن.
+اگر سوال خارج از موضوع بود، مؤدبانه کاربر رو به موضوع مطالعه برگردون.
+از اطلاعات کاربر برای شخصی‌سازی پاسخ‌ها استفاده کن.
+
+امکانات ویژه:
+1. می‌تونی برنامه امروز کاربر رو تغییر بدی (اضافه کردن، حذف کردن، تغییر زمان)
+2. می‌تونی پارت‌های برنامه رو تکمیل کنی
+3. می‌تونی چالش‌های جدید ثبت کنی
+4. همیشه بعد از هر تغییر، به کاربر بگو که تغییر اعمال شد"""
+
+def init_user_quota(user_id: int) -> None:
+    try:
+        execute_query("""
+            INSERT INTO user_quota (user_id, daily_messages, last_reset, plan_type)
+            VALUES (%s, 0, %s, 'trial')
+            ON CONFLICT (user_id) DO UPDATE SET
+                daily_messages = 0,
+                last_reset = EXCLUDED.last_reset,
+                plan_type = COALESCE(user_quota.plan_type, 'trial')
+        """, (user_id, get_today_date()))
+        logger.info(f"✅ سقف مصرف کاربر {user_id} بروزرسانی شد")
+    except Exception as e:
+        logger.error(f"خطا در بروزرسانی سقف مصرف: {e}")
+
+def get_user_quota(user_id: int) -> Optional[Dict]:
+    result = execute_query(
+        """SELECT daily_messages, last_reset, plan_type, plan_expiry 
+           FROM user_quota WHERE user_id = %s""",
+        (user_id,),
+        fetch=True
+    )
+    if not result:
+        return None
+    return {
+        "daily_messages": result[0] or 0,
+        "last_reset": result[1],
+        "plan_type": result[2] or "trial",
+        "plan_expiry": result[3]
+    }
+
+def get_remaining_messages(user_id: int) -> int:
+    quota = get_user_quota(user_id)
+    if not quota:
+        return 10
+    
+    today = get_today_date()
+    if str(quota["last_reset"]) != today:
+        execute_query(
+            "UPDATE user_quota SET daily_messages = 0, last_reset = %s WHERE user_id = %s",
+            (today, user_id)
+        )
+        quota["daily_messages"] = 0
+    
+    if quota["plan_type"] == "trial":
+        limit = 10
+    elif quota["plan_type"] == "basic":
+        limit = 15
+    elif quota["plan_type"] == "premium":
+        limit = 30
+    else:
+        limit = 10
+    
+    remaining = limit - quota["daily_messages"]
+    return max(0, remaining)
+
+def increment_quota(user_id: int) -> bool:
+    try:
+        execute_query(
+            "UPDATE user_quota SET daily_messages = daily_messages + 1 WHERE user_id = %s",
+            (user_id,)
+        )
+        return True
+    except:
+        return False
+
+def save_chat_message(user_id: int, role: str, content: str) -> None:
+    try:
+        execute_query(
+            """INSERT INTO chat_messages (user_id, role, content)
+               VALUES (%s, %s, %s)""",
+            (user_id, role, content)
+        )
+    except Exception as e:
+        logger.error(f"خطا در ذخیره پیام چت: {e}")
+
+def get_chat_history(user_id: int, limit: int = 10) -> List[Dict]:
+    results = execute_query(
+        """SELECT role, content FROM chat_messages 
+           WHERE user_id = %s 
+           ORDER BY created_at DESC LIMIT %s""",
+        (user_id, limit * 2),
+        fetchall=True
+    )
+    if not results:
+        return []
+    reversed_results = list(reversed(results))
+    return [{"role": r[0], "content": r[1]} for r in reversed_results]
+
+def clear_chat_history(user_id: int) -> None:
+    execute_query("DELETE FROM chat_messages WHERE user_id = %s", (user_id,))
+
+# ==================== توابع ذخیره‌سازی ====================
+def save_user(user_data: Dict) -> Optional[int]:
+    query = """
+    INSERT INTO users (telegram_id, username, full_name, goal, grade, field,
+                       exam_date, study_hours_per_week, peak_time, learning_style,
+                       focus_duration, break_duration, weak_subjects, strong_subjects,
+                       daily_schedule, is_active, is_onboarded, current_phase, plan_level)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (telegram_id) DO UPDATE SET
+        username = EXCLUDED.username,
+        full_name = EXCLUDED.full_name,
+        goal = EXCLUDED.goal,
+        grade = EXCLUDED.grade,
+        field = EXCLUDED.field,
+        exam_date = EXCLUDED.exam_date,
+        study_hours_per_week = EXCLUDED.study_hours_per_week,
+        peak_time = EXCLUDED.peak_time,
+        learning_style = EXCLUDED.learning_style,
+        focus_duration = EXCLUDED.focus_duration,
+        break_duration = EXCLUDED.break_duration,
+        weak_subjects = EXCLUDED.weak_subjects,
+        strong_subjects = EXCLUDED.strong_subjects,
+        daily_schedule = EXCLUDED.daily_schedule,
+        is_onboarded = EXCLUDED.is_onboarded,
+        plan_level = EXCLUDED.plan_level,
+        updated_at = CURRENT_TIMESTAMP
+    RETURNING id
+    """
+    result = execute_query(
+        query,
+        (
+            user_data["telegram_id"],
+            user_data.get("username"),
+            user_data.get("full_name"),
+            user_data.get("goal"),
+            user_data.get("grade"),
+            user_data.get("field"),
+            user_data.get("exam_date"),
+            user_data.get("study_hours_per_week"),
+            user_data.get("peak_time"),
+            user_data.get("learning_style"),
+            user_data.get("focus_duration", 45),
+            user_data.get("break_duration", 10),
+            json.dumps(user_data.get("weak_subjects", [])),
+            json.dumps(user_data.get("strong_subjects", [])),
+            json.dumps(user_data.get("daily_schedule", {})),
+            user_data.get("is_active", True),
+            user_data.get("is_onboarded", False),
+            user_data.get("current_phase", 0),
+            user_data.get("plan_level", 0)
+        ),
+        fetch=True
+    )
+    return result[0] if result else None
+
+def update_user_plan_level(user_id: int, level: int) -> bool:
+    current = execute_query(
+        "SELECT version FROM users WHERE id = %s",
+        (user_id,),
+        fetch=True
+    )
+    if not current:
+        return False
+    
+    current_version = current[0]
+    
+    result = execute_query(
+        """UPDATE users 
+           SET plan_level = %s, 
+               updated_at = CURRENT_TIMESTAMP,
+               version = version + 1
+           WHERE id = %s AND version = %s""",
+        (level, user_id, current_version)
+    )
+    
+    if result == 0:
+        logger.warning(f"Optimistic lock failed for user {user_id}")
+        return False
+    return True
+
+def save_activity(activity_data: Dict) -> Optional[int]:
+    query = """
+    INSERT INTO activity_log (
+        user_id, date, subject, topic, activity_type, planned_duration,
+        actual_duration, start_time, end_time, score, status, difficulty,
+        focus_rating, energy_level, mood, distractions, notes,
+        break_duration, pages_count, test_count, correct_count, part_order
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    RETURNING id
+    """
+    result = execute_query(
+        query,
+        (
+            activity_data["user_id"],
+            activity_data["date"],
+            activity_data["subject"],
+            activity_data.get("topic"),
+            activity_data.get("activity_type"),
+            activity_data.get("planned_duration"),
+            activity_data.get("actual_duration"),
+            activity_data.get("start_time"),
+            activity_data.get("end_time"),
+            activity_data.get("score"),
+            activity_data.get("status", "pending"),
+            activity_data.get("difficulty"),
+            activity_data.get("focus_rating"),
+            activity_data.get("energy_level"),
+            activity_data.get("mood"),
+            json.dumps(activity_data.get("distractions", [])),
+            activity_data.get("notes"),
+            activity_data.get("break_duration"),
+            activity_data.get("pages_count"),
+            activity_data.get("test_count"),
+            activity_data.get("correct_count"),
+            activity_data.get("part_order", 0)
+        ),
+        fetch=True
+    )
+    return result[0] if result else None
+
+def update_activity_status(activity_id: int, status: str, score: float = None, 
+                           actual_duration: int = None) -> None:
+    query = """
+    UPDATE activity_log 
+    SET status = %s, score = COALESCE(%s, score),
+        actual_duration = COALESCE(%s, actual_duration),
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = %s
+    """
+    execute_query(query, (status, score, actual_duration, activity_id))
+
+def update_activity_part_order(activity_id: int, new_order: int) -> None:
+    execute_query(
+        "UPDATE activity_log SET part_order = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+        (new_order, activity_id)
+    )
+
+def delete_activity(activity_id: int) -> None:
+    execute_query("DELETE FROM activity_log WHERE id = %s", (activity_id,))
+
+def save_plan(plan_data: Dict) -> Optional[int]:
+    query = """
+    INSERT INTO personalized_plans (
+        user_id, date, daily_plan, reasoning, expected_outcome,
+        applied_advice_ids, is_active
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (user_id, date) DO UPDATE SET
+        daily_plan = EXCLUDED.daily_plan,
+        reasoning = EXCLUDED.reasoning,
+        expected_outcome = EXCLUDED.expected_outcome,
+        applied_advice_ids = EXCLUDED.applied_advice_ids,
+        is_active = EXCLUDED.is_active,
+        updated_at = CURRENT_TIMESTAMP
+    RETURNING id
+    """
+    result = execute_query(
+        query,
+        (
+            plan_data["user_id"],
+            plan_data["date"],
+            json.dumps(plan_data["daily_plan"]),
+            json.dumps(plan_data.get("reasoning", {})),
+            json.dumps(plan_data.get("expected_outcome", {})),
+            json.dumps(plan_data.get("applied_advice_ids", [])),
+            plan_data.get("is_active", True)
+        ),
+        fetch=True
+    )
+    return result[0] if result else None
+
+def save_advice(advice_data: Dict) -> Optional[int]:
+    query = """
+    INSERT INTO advisory_rules (
+        topic, label, condition, advice, priority, time, frequency,
+        days, applicable_for, subjects, is_active, is_system_generated,
+        created_by
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    RETURNING id
+    """
+    result = execute_query(
+        query,
+        (
+            advice_data["topic"],
+            advice_data.get("label"),
+            advice_data.get("condition"),
+            advice_data["advice"],
+            advice_data.get("priority", 5),
+            advice_data.get("time"),
+            advice_data.get("frequency"),
+            json.dumps(advice_data.get("days", [])),
+            json.dumps(advice_data.get("applicable_for", {})),
+            json.dumps(advice_data.get("subjects", [])),
+            advice_data.get("is_active", True),
+            advice_data.get("is_system_generated", False),
+            advice_data.get("created_by")
+        ),
+        fetch=True
+    )
+    return result[0] if result else None
+
+def update_subject_status(user_id: int, subject: str, activity_data: Dict) -> None:
+    current = execute_query(
+        "SELECT * FROM subject_status WHERE user_id = %s AND subject = %s",
+        (user_id, subject),
+        fetch=True
+    )
+    
+    if current:
+        total_sessions = (current[4] or 0) + 1
+        completed = (current[5] or 0) + (1 if activity_data.get("status") == "done" else 0)
+        total_minutes = (current[6] or 0) + (activity_data.get("actual_duration") or 0)
+        
+        old_avg = current[7] or 0
+        new_score = activity_data.get("score")
+        if new_score is not None:
+            avg_score = (old_avg * (total_sessions - 1) + new_score) / total_sessions
+        else:
+            avg_score = old_avg
+        
+        execute_query(
+            """UPDATE subject_status 
+               SET total_sessions = %s, completed_sessions = %s,
+                   total_study_minutes = %s, avg_score = %s,
+                   last_studied = %s, last_score = %s,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE user_id = %s AND subject = %s""",
+            (
+                total_sessions, completed, total_minutes, avg_score,
+                activity_data["date"], new_score,
+                user_id, subject
+            )
+        )
+    else:
+        execute_query(
+            """INSERT INTO subject_status (user_id, subject, total_sessions, 
+               completed_sessions, total_study_minutes, avg_score, last_studied, last_score)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                user_id, subject, 1,
+                1 if activity_data.get("status") == "done" else 0,
+                activity_data.get("actual_duration") or 0,
+                activity_data.get("score"),
+                activity_data["date"],
+                activity_data.get("score")
+            )
+        )
+
+def save_session_with_parts(user_id: int, parts: List[Dict], time_slots: List[str], 
+                           topics: List[Dict], plan_level: int = 0) -> Optional[int]:
+    conn = None
+    cursor = None
+    try:
+        conn = get_connection()
         cursor = conn.cursor()
         
-        query = """
-        INSERT INTO files (grade, field, subject, topic, description, 
-                          telegram_file_id, file_name, file_size, mime_type, 
-                          upload_date, uploader_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        RETURNING file_id, upload_date
-        """
+        date = get_today_date()
         
-        params = (
-            grade, field, subject, topic, description,
-            telegram_file_id, file_name, file_size, mime_type,
-            upload_date, uploader_id
+        cursor.execute("""
+            INSERT INTO study_sessions (user_id, date, total_parts, max_edits, time_slots, topics, archived, plan_level)
+            VALUES (%s, %s, %s, %s, %s, %s, FALSE, %s)
+            RETURNING session_id
+        """, (
+            user_id,
+            date,
+            len(parts),
+            2,
+            json.dumps(time_slots),
+            json.dumps(topics),
+            plan_level
+        ))
+        
+        result = cursor.fetchone()
+        if not result:
+            conn.rollback()
+            return None
+        
+        session_id = result[0]
+        
+        for part in parts:
+            planned_start = part.get("planned_start_time")
+            planned_end = part.get("planned_end_time")
+            
+            if not planned_start and part.get("time_slot"):
+                try:
+                    start_str, end_str = part["time_slot"].split("-")
+                    planned_start = start_str
+                    planned_end = end_str
+                except:
+                    pass
+            
+            cursor.execute("""
+                INSERT INTO study_parts (
+                    session_id, part_number, title, grade,
+                    planned_minutes, time_slot, is_hardest, is_easiest, pages,
+                    planned_start_time, planned_end_time, is_fixed_time, reason
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                session_id,
+                part["part_number"],
+                part["title"],
+                part.get("grade", 3),
+                part["planned_minutes"],
+                part.get("time_slot", ""),
+                part.get("is_hardest", False),
+                part.get("is_easiest", False),
+                part.get("pages", 0),
+                planned_start,
+                planned_end,
+                part.get("is_fixed_time", False),
+                part.get("reason", "")
+            ))
+        
+        conn.commit()
+        return session_id
+        
+    except Exception as e:
+        logger.error(f"❌ خطا در save_session_with_parts: {e}")
+        if conn:
+            conn.rollback()
+        return None
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            return_connection(conn)
+
+def add_part_to_session(session_id: int, part_data: Dict) -> Optional[int]:
+    conn = None
+    cursor = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT COALESCE(MAX(part_number), 0) + 1 FROM study_parts WHERE session_id = %s",
+            (session_id,)
         )
+        result = cursor.fetchone()
+        new_part_number = result[0] if result else 1
         
-        logger.info(f"🔍 اجرای کوئری INSERT...")
-        cursor.execute(query, params)
+        cursor.execute("""
+            INSERT INTO study_parts (
+                session_id, part_number, title, grade,
+                planned_minutes, time_slot, pages, completed,
+                planned_start_time, planned_end_time, is_fixed_time, reason
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING part_id
+        """, (
+            session_id,
+            new_part_number,
+            part_data["title"],
+            part_data.get("grade", 3),
+            part_data["planned_minutes"],
+            part_data.get("time_slot", ""),
+            part_data.get("pages", 0),
+            False,
+            part_data.get("planned_start_time"),
+            part_data.get("planned_end_time"),
+            part_data.get("is_fixed_time", False),
+            part_data.get("reason", "")
+        ))
+        
+        result = cursor.fetchone()
+        if not result:
+            conn.rollback()
+            return None
+        
+        part_id = result[0]
+        
+        cursor.execute("""
+            UPDATE study_sessions 
+            SET total_parts = total_parts + 1
+            WHERE session_id = %s
+        """, (session_id,))
+        
+        conn.commit()
+        return part_id
+        
+    except Exception as e:
+        logger.error(f"❌ خطا در add_part_to_session: {e}")
+        if conn:
+            conn.rollback()
+        return None
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            return_connection(conn)
+
+def confirm_session(session_id: int) -> None:
+    execute_query(
+        "UPDATE study_sessions SET confirmed = TRUE WHERE session_id = %s",
+        (session_id,)
+    )
+
+def finish_session(session_id: int) -> None:
+    execute_query(
+        "UPDATE study_sessions SET is_finished = TRUE, archived = TRUE WHERE session_id = %s",
+        (session_id,)
+    )
+
+def update_part_times_and_shift_remaining(session_id: int, completed_part_id: int, actual_end_time: datetime) -> None:
+    conn = None
+    cursor = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT planned_start_time, planned_end_time, planned_minutes, is_fixed_time, part_number
+            FROM study_parts
+            WHERE part_id = %s
+        """, (completed_part_id,))
+        part_info = cursor.fetchone()
+        if not part_info:
+            return
+        
+        planned_end = part_info[1]
+        planned_minutes = part_info[2]
+        part_number = part_info[4]
+        
+        planned_end_time = datetime.combine(actual_end_time.date(), planned_end)
+        if planned_end_time.tzinfo is None:
+            planned_end_time = IRAN_TZ.localize(planned_end_time)
+        
+        delay = int((actual_end_time - planned_end_time).total_seconds() / 60)
+        
+        cursor.execute("""
+            UPDATE study_parts
+            SET actual_end_time = %s, actual_minutes = %s, completed = TRUE, delay_minutes = %s
+            WHERE part_id = %s
+        """, (actual_end_time, planned_minutes, delay, completed_part_id))
+        
+        cursor.execute("""
+            SELECT part_id, planned_start_time, planned_end_time, is_fixed_time, planned_minutes, part_number
+            FROM study_parts
+            WHERE session_id = %s AND part_number > %s AND completed = FALSE
+            ORDER BY part_number
+        """, (session_id, part_number))
+        
+        next_parts = cursor.fetchall()
+        
+        if not next_parts:
+            conn.commit()
+            return
+        
+        current_time = actual_end_time
+        
+        for next_part in next_parts:
+            next_part_id = next_part[0]
+            next_duration = next_part[4]
+            
+            new_start = current_time
+            new_end = current_time + timedelta(minutes=next_duration)
+            
+            if new_end.hour >= 23 and new_end.minute > 30:
+                tomorrow = (datetime.now(IRAN_TZ) + timedelta(days=1)).date()
+                
+                cursor.execute("""
+                    SELECT session_id FROM study_sessions
+                    WHERE user_id = (SELECT user_id FROM study_sessions WHERE session_id = %s)
+                    AND date = %s AND archived = FALSE
+                """, (session_id, tomorrow.strftime("%Y-%m-%d")))
+                tomorrow_session = cursor.fetchone()
+                
+                if tomorrow_session:
+                    tomorrow_session_id = tomorrow_session[0]
+                else:
+                    cursor.execute("""
+                        INSERT INTO study_sessions (user_id, date, total_parts, max_edits, time_slots, topics)
+                        SELECT user_id, %s, 0, 2, '[]', '[]'
+                        FROM study_sessions
+                        WHERE session_id = %s
+                        RETURNING session_id
+                    """, (tomorrow.strftime("%Y-%m-%d"), session_id))
+                    tomorrow_session_id = cursor.fetchone()[0]
+                
+                cursor.execute("""
+                    INSERT INTO study_parts (
+                        session_id, part_number, title, grade, planned_minutes,
+                        time_slot, pages, planned_start_time, planned_end_time,
+                        is_fixed_time, completed, delay_minutes, reason
+                    ) VALUES (
+                        %s,
+                        (SELECT COALESCE(MAX(part_number), 0) + 1 FROM study_parts WHERE session_id = %s),
+                        (SELECT title FROM study_parts WHERE part_id = %s),
+                        (SELECT grade FROM study_parts WHERE part_id = %s),
+                        %s,
+                        %s,
+                        (SELECT pages FROM study_parts WHERE part_id = %s),
+                        %s, %s,
+                        %s, FALSE, %s,
+                        (SELECT reason FROM study_parts WHERE part_id = %s)
+                    )
+                """, (
+                    tomorrow_session_id,
+                    tomorrow_session_id,
+                    next_part_id,
+                    next_part_id,
+                    next_duration,
+                    f"{new_start.strftime('%H:%M')}-{new_end.strftime('%H:%M')}",
+                    next_part_id,
+                    new_start.strftime("%H:%M"),
+                    new_end.strftime("%H:%M"),
+                    next_part[3],
+                    delay,
+                    next_part_id
+                ))
+                
+                cursor.execute("DELETE FROM study_parts WHERE part_id = %s", (next_part_id,))
+                continue
+            
+            cursor.execute("""
+                UPDATE study_parts
+                SET planned_start_time = %s, 
+                    planned_end_time = %s,
+                    time_slot = %s, 
+                    delay_minutes = delay_minutes + %s
+                WHERE part_id = %s
+            """, (
+                new_start.strftime("%H:%M"),
+                new_end.strftime("%H:%M"),
+                f"{new_start.strftime('%H:%M')}-{new_end.strftime('%H:%M')}",
+                delay,
+                next_part_id
+            ))
+            
+            current_time = new_end
         
         conn.commit()
         
-        result = cursor.fetchone()
-        
-        if result:
-            file_data = {
-                "file_id": result[0],
-                "grade": grade,
-                "field": field,
-                "subject": subject,
-                "topic": topic,
-                "description": description,
-                "file_name": file_name,
-                "file_size": file_size,
-                "upload_date": result[1]
-            }
-            
-            logger.info(f"✅ فایل با موفقیت در دیتابیس ذخیره شد: {file_name} (ID: {result[0]})")
-            
-            cursor.execute("SELECT COUNT(*) FROM files WHERE file_id = %s", (result[0],))
-            count = cursor.fetchone()[0]
-            logger.info(f"🔍 تأیید ذخیره‌سازی: {count} رکورد با ID {result[0]} وجود دارد")
-            
-            return file_data
-        
-        logger.error("❌ هیچ نتیجه‌ای از INSERT برگشت داده نشد")
-        return None
-        
     except Exception as e:
-        logger.error(f"❌ خطا در آپلود فایل: {e}", exc_info=True)
+        logger.error(f"❌ خطا در update_part_times_and_shift_remaining: {e}")
         if conn:
             conn.rollback()
-            logger.info("🔁 Rollback انجام شد")
-        return None
-        
     finally:
         if cursor:
             cursor.close()
         if conn:
-            db.return_connection(conn)
-            logger.info("🔌 Connection بازگردانده شد")
+            return_connection(conn)
 
-def get_user_files(user_id: int) -> List[Dict]:
-    """دریافت فایل‌های مرتبط با کاربر"""
+# ==================== سیستم سطوح تولید برنامه ====================
+
+def calculate_plan_level(user_id: int) -> int:
+    user_data = get_user_data(str(user_id))
+    if not user_data:
+        return 0
+    
+    created_at = user_data.get("created_at")
+    if not created_at:
+        return 0
+    
+    if hasattr(created_at, 'days'):
+        days_active = (get_iran_now() - created_at).days
+    else:
+        try:
+            if isinstance(created_at, datetime):
+                days_active = (get_iran_now() - created_at).days
+            else:
+                days_active = 0
+        except:
+            days_active = 0
+    
+    sessions = get_last_n_days_data(user_id, 30)
+    study_days = len(sessions)
+    
+    if days_active >= 14 and study_days >= 10:
+        return 3
+    elif days_active >= 7 and study_days >= 5:
+        return 2
+    elif days_active >= 1 and study_days >= 1:
+        return 1
+    else:
+        return 0
+
+def get_plan_level_name(level: int) -> str:
+    return PLAN_LEVELS.get(level, PLAN_LEVELS[0])["name"]
+
+def get_plan_level_emoji(level: int) -> str:
+    return PLAN_LEVELS.get(level, PLAN_LEVELS[0])["emoji"]
+
+# ==================== پرامپت‌های AI بر اساس سطح ====================
+
+def generate_plan_prompt_level_0(user_data: Dict, user_id: int) -> str:
+    weak = ", ".join(user_data.get("weak_subjects", [])) or "ندارد"
+    strong = ", ".join(user_data.get("strong_subjects", [])) or "ندارد"
+    
+    return f"""شما یک دستیار برنامه‌ریزی مطالعه هستید.
+
+=== اطلاعات کاربر ===
+هدف: {user_data.get('goal', 'نامشخص')}
+پایه: {user_data.get('grade', 'نامشخص')}
+رشته: {user_data.get('field', 'نامشخص')}
+تاریخ آزمون: {user_data.get('exam_date', 'نامشخص')}
+
+=== نقطه شروع ===
+کاربر تازه وارد ربات شده است.
+
+=== درس‌های ضعیف ===
+{weak}
+
+=== درس‌های قوی ===
+{strong}
+
+=== زمان موجود ===
+{user_data.get('study_hours_per_week', 10)} ساعت در هفته
+بهترین زمان: {user_data.get('peak_time', 'نامشخص')}
+
+=== وظیفه ===
+یک برنامه مطالعه اولیه برای امروز طراحی کن.
+
+قوانین:
+1. درس‌های ضعیف اولویت دارند
+2. هر جلسه {user_data.get('focus_duration', 45)} دقیقه با {user_data.get('break_duration', 10)} دقیقه استراحت
+3. حداکثر ۳ جلسه در روز
+
+خروجی JSON:
+{{
+  "subjects": [
+    {{"subject": "نام درس", "topic": "مبحث", "duration": 45, "priority": "high"}}
+  ],
+  "breaks": [{{"duration": 10}}],
+  "total_hours": 2.5,
+  "recommendations": ["توصیه کلی"]
+}}"""
+
+def generate_plan_prompt_level_1(user_data: Dict, user_id: int, 
+                                 subject_status: List[Dict], 
+                                 yesterday_activities: List[Dict]) -> str:
+    status_text = "\n".join([
+        f"- {s['subject']}: میانگین {s.get('avg_score', 0):.1f}% | {s.get('completed_sessions', 0)} جلسه"
+        for s in subject_status[:5]
+    ]) if subject_status else "داده‌ای موجود نیست"
+    
+    yesterday_text = "\n".join([
+        f"- {a['subject']}: {a.get('actual_duration', a.get('planned_duration', 0))} دقیقه | {'✅' if a.get('status') == 'done' else '⬜'}"
+        for a in yesterday_activities[:5]
+    ]) if yesterday_activities else "فعالیتی ثبت نشده"
+    
+    total_time = sum(a.get('actual_duration', a.get('planned_duration', 0)) for a in yesterday_activities)
+    done = len([a for a in yesterday_activities if a.get('status') == 'done'])
+    total = len(yesterday_activities)
+    scores = [a.get('score') for a in yesterday_activities if a.get('score') is not None]
+    avg_score = sum(scores) / len(scores) if scores else 0
+    
+    advice = get_active_advice(user_id)
+    advice_text = "\n".join([f"- {a['advice']}" for a in advice[:3]]) if advice else "توصیه‌ای موجود نیست"
+    
+    return f"""شما یک دستیار برنامه‌ریزی مطالعه هستید.
+
+=== اطلاعات کاربر ===
+نام: {user_data.get('full_name', 'کاربر')}
+هدف: {user_data.get('goal', 'نامشخص')}
+پایه: {user_data.get('grade', 'نامشخص')}
+
+=== وضعیت دروس (امروز) ===
+{status_text}
+
+=== فعالیت‌های دیروز ===
+{yesterday_text}
+
+=== عملکرد دیروز ===
+- کل زمان: {format_time_hours_minutes(total_time)}
+- تکمیل‌شده: {done}/{total}
+- میانگین نمره: {avg_score:.1f}%
+
+=== توصیه‌های ادمین ===
+{advice_text}
+
+=== وظیفه ===
+برنامه مطالعه امروز را بر اساس عملکرد دیروز طراحی کن.
+
+قوانین:
+1. درس‌های ضعیف را صبح بگذار
+2. درس‌های قوی را عصر بگذار
+3. زمان هر جلسه بر اساس {user_data.get('focus_duration', 45)} دقیقه تنظیم شود
+4. بین هر جلسه {user_data.get('break_duration', 10)} دقیقه استراحت
+
+خروجی JSON:
+{{
+  "subjects": [
+    {{
+      "subject": "نام درس",
+      "topic": "مبحث خاص",
+      "duration": 45,
+      "priority": "high",
+      "reason": "دلیل انتخاب"
+    }}
+  ],
+  "breaks": [{{"duration": 10, "type": "استراحت"}}],
+  "total_hours": 3,
+  "recommendations": ["توصیه امروز"]
+}}"""
+
+def generate_plan_prompt_level_2(user_data: Dict, user_id: int, 
+                                 insights: Dict, advice: List[Dict]) -> str:
+    advice_text = "\n".join([f"- {a['advice']}" for a in advice[:3]]) if advice else "توصیه‌ای موجود نیست"
+    
+    sessions = get_last_n_days_data(user_id, 7)
+    daily_data = "\n".join([
+        f"روز {i+1}: {s['date']} - {s['completed_parts']}/{s['total_parts']} پارت"
+        for i, s in enumerate(sessions)
+    ]) if sessions else "داده‌ای موجود نیست"
+    
+    return f"""شما یک تحلیلگر و برنامه‌ریز هوشمند مطالعه هستید.
+
+=== اطلاعات کاربر ===
+نام: {user_data.get('full_name', 'کاربر')}
+هدف: {user_data.get('goal', 'نامشخص')}
+پایه: {user_data.get('grade', 'نامشخص')}
+رشته: {user_data.get('field', 'نامشخص')}
+
+=== داده‌های ۷ روز اخیر ===
+{daily_data}
+
+=== تحلیل الگوها ===
+🔍 الگوهای شناسایی‌شده:
+- بهترین زمان: {insights.get('best_time', 'نامشخص')}
+- ضعیف‌ترین درس: {insights.get('weakest_subject', 'نامشخص')}
+- قوی‌ترین درس: {insights.get('strongest_subject', 'نامشخص')}
+- میانگین روزانه: {insights.get('avg_daily_hours', 0):.1f} ساعت
+- نرخ تکمیل: {insights.get('completion_rate', 0):.1f}%
+
+=== توصیه‌های ادمین ===
+{advice_text}
+
+=== وظیفه ===
+برنامه شخصی‌سازی‌شده برای امروز طراحی کن.
+
+قوانین شخصی‌سازی:
+1. درس ضعیف ({insights.get('weakest_subject', 'نامشخص')}) را در بهترین زمان ({insights.get('best_time', 'نامشخص')}) بگذار
+2. درس قوی ({insights.get('strongest_subject', 'نامشخص')}) را در زمان کم‌انرژی بگذار
+3. زمان هر جلسه بر اساس {user_data.get('focus_duration', 45)} دقیقه تنظیم شود
+4. از توصیه‌های ادمین استفاده کن
+
+خروجی JSON:
+{{
+  "subjects": [
+    {{
+      "subject": "نام درس",
+      "topic": "مبحث",
+      "duration": 45,
+      "priority": "high",
+      "time_slot": "morning/afternoon/night",
+      "reason": "چرا این زمان"
+    }}
+  ],
+  "breaks": [
+    {{"duration": 10, "type": "استراحت کوتاه", "time": "بین جلسات"}},
+    {{"duration": 30, "type": "ناهار", "time": "۱۳:۰۰"}}
+  ],
+  "total_hours": 3.5,
+  "recommendations": ["توصیه شخصی‌سازی‌شده"],
+  "expected_outcome": {{
+    "completion_probability": 0.85,
+    "expected_score": 75
+  }}
+}}"""
+
+def generate_plan_prompt_level_3(user_data: Dict, user_id: int, 
+                                 insights: Dict, advice: List[Dict]) -> str:
+    advice_text = "\n".join([f"- {a['advice']} (اولویت {a.get('priority', 5)})" for a in advice[:5]]) if advice else "توصیه‌ای موجود نیست"
+    
+    sessions = get_last_n_days_data(user_id, 14)
+    daily_data = "\n".join([
+        f"روز {i+1}: {s['date']} - {s['completed_parts']}/{s['total_parts']} پارت"
+        for i, s in enumerate(sessions)
+    ]) if sessions else "داده‌ای موجود نیست"
+    
+    time_patterns = insights.get('time_patterns', {})
+    perf_patterns = insights.get('performance_patterns', {})
+    quality_patterns = insights.get('quality_patterns', {})
+    
+    return f"""شما یک دستیار هوشمند برنامه‌ریزی تطبیقی هستید.
+
+=== اطلاعات کاربر ===
+نام: {user_data.get('full_name', 'کاربر')}
+هدف: {user_data.get('goal', 'نامشخص')}
+پایه: {user_data.get('grade', 'نامشخص')}
+
+=== داده‌های ۱۴ روز اخیر ===
+{daily_data}
+
+=== الگوهای پیشرفته ===
+⏰ الگوهای زمانی:
+{json.dumps(time_patterns, ensure_ascii=False) if time_patterns else 'در حال جمع‌آوری'}
+
+📊 الگوهای عملکردی:
+{json.dumps(perf_patterns, ensure_ascii=False) if perf_patterns else 'در حال جمع‌آوری'}
+
+🎯 الگوهای کیفی:
+{json.dumps(quality_patterns, ensure_ascii=False) if quality_patterns else 'در حال جمع‌آوری'}
+
+=== توصیه‌های ادمین (اولویت‌بندی‌شده) ===
+{advice_text}
+
+=== وضعیت امروز ===
+- انرژی: {user_data.get('energy_level', 'نامشخص')}
+- تمرکز: {user_data.get('focus_level', 'نامشخص')}
+- فعالیت‌های انجام‌شده: {len(get_today_activities(user_id))}
+
+=== وظیفه ===
+برنامه شناور امروز را با زمان‌بندی دقیق طراحی کن.
+
+قوانین شناور:
+1. زمان‌ها بر اساس الگوهای کاربر تنظیم شود
+2. درس‌های سخت در زمان‌های با انرژی بالا
+3. درس‌های آسان در زمان‌های با انرژی پایین
+4. هر جلسه بر اساس {user_data.get('focus_duration', 45)} دقیقه تنظیم شود
+5. استراحت‌ها بر اساس الگوهای کاربر تنظیم شود
+6. ۱۰ دقیقه قبل از هر جلسه اعلان تنظیم شود
+7. در صورت تاخیر، برنامه تطبیق داده شود
+
+خروجی JSON:
+{{
+  "subjects": [
+    {{
+      "subject": "نام درس",
+      "topic": "مبحث",
+      "duration": 45,
+      "priority": "high",
+      "time": "08:00",
+      "end_time": "08:45",
+      "alert_before": 10,
+      "flexible": true,
+      "reason": "دلیل زمان‌بندی"
+    }}
+  ],
+  "breaks": [
+    {{"time": "08:45", "duration": 10, "type": "استراحت کوتاه"}},
+    {{"time": "13:00", "duration": 30, "type": "ناهار"}}
+  ],
+  "total_hours": 4,
+  "adaptive_rules": {{
+    "if_late": "تغییر زمان به بعد",
+    "if_tired": "کاهش زمان جلسه",
+    "if_energy_high": "افزایش زمان جلسه"
+  }},
+  "recommendations": ["توصیه شناور"],
+  "expected_outcome": {{
+    "completion_probability": 0.9,
+    "expected_score": 80,
+    "burnout_risk": "{insights.get('burnout_risk', 'low')}"
+  }},
+  "alerts": [
+    {{"time": "07:50", "message": "۱۰ دقیقه تا شروع ریاضی"}}
+  ]
+}}"""
+
+# ==================== تولید برنامه با AI (Async) ====================
+
+async def call_ai(prompt: str, max_tokens: int = 1500, temperature: float = 0.3) -> Optional[str]:
+    for attempt in range(3):
+        try:
+            completion = await client.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            logger.error(f"AI error (attempt {attempt+1}): {e}")
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+            else:
+                return None
+    return None
+
+async def generate_plan_with_ai(user_id: int, user_data: Dict) -> Dict:
+    level = user_data.get('plan_level', 0)
+    
+    subject_status = get_subject_status(user_id)
+    yesterday_activities = get_today_activities(user_id)
+    advice = get_active_advice(user_id)
+    insights = get_user_insights(user_id)
+    
+    prompt = ""
+    
+    if level == 0:
+        prompt = generate_plan_prompt_level_0(user_data, user_id)
+    elif level == 1:
+        prompt = generate_plan_prompt_level_1(user_data, user_id, subject_status, yesterday_activities)
+    elif level == 2:
+        prompt = generate_plan_prompt_level_2(user_data, user_id, insights or {}, advice)
+    else:
+        prompt = generate_plan_prompt_level_3(user_data, user_id, insights or {}, advice)
+    
+    response = await call_ai(prompt, max_tokens=1200, temperature=0.3)
+    if not response:
+        return {}
+    
     try:
-        logger.info(f"🔍 دریافت فایل‌های کاربر {user_id}")
-        user_info = get_user_info(user_id)
-        
-        if not user_info:
-            logger.warning(f"⚠️ اطلاعات کاربر {user_id} یافت نشد")
-            return []
-        
-        logger.info(f"🔍 اطلاعات کاربر {user_id}: {user_info}")
-        
-        grade = user_info["grade"]
-        field = user_info["field"]
-        
-        logger.info(f"🔍 جستجوی فایل‌ها برای: {grade} {field}")
-        
-        if grade == "فارغ‌التحصیل":
-            query = """
-            SELECT file_id, subject, topic, description, file_name, file_size, upload_date, download_count
-            FROM files
-            WHERE (grade = %s OR grade = 'دوازدهم') AND field = %s
-            ORDER BY upload_date DESC
-            LIMIT 50
-            """
-            results = db.execute_query(query, (grade, field), fetchall=True)
-        else:
-            query = """
-            SELECT file_id, subject, topic, description, file_name, file_size, upload_date, download_count
-            FROM files
-            WHERE grade = %s AND field = %s
-            ORDER BY upload_date DESC
-            LIMIT 50
-            """
-            results = db.execute_query(query, (grade, field), fetchall=True)
-        
-        logger.info(f"🔍 تعداد فایل‌های یافت شده: {len(results) if results else 0}")
-        
-        files = []
-        if results:
-            for row in results:
-                files.append({
-                    "file_id": row[0],
-                    "subject": row[1],
-                    "topic": row[2],
-                    "description": row[3],
-                    "file_name": row[4],
-                    "file_size": row[5],
-                    "upload_date": row[6],
-                    "download_count": row[7]
-                })
-        
-        logger.info(f"🔍 فایل‌های بازگشتی: {[f['file_name'] for f in files]}")
-        return files
-        
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        return {}
     except Exception as e:
-        logger.error(f"❌ خطا در دریافت فایل‌های کاربر: {e}", exc_info=True)
-        return []
+        logger.error(f"❌ خطا در پارس JSON: {e}")
+        fix_prompt = f"خروجی قبلی JSON معتبر نبود. لطفاً فقط JSON خالص برگردان. خطا: {e}\nخروجی قبلی: {response[:200]}..."
+        fixed_response = await call_ai(fix_prompt, max_tokens=800, temperature=0.1)
+        if fixed_response:
+            try:
+                json_match = re.search(r'\{.*\}', fixed_response, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group())
+            except:
+                pass
+        return {}
 
-def get_files_by_subject(user_id: int, subject: str) -> List[Dict]:
-    """دریافت فایل‌های یک درس خاص"""
-    try:
-        user_info = get_user_info(user_id)
-        if not user_info:
-            return []
-        
-        grade = user_info["grade"]
-        field = user_info["field"]
-        
-        if grade == "فارغ‌التحصیل":
-            query = """
-            SELECT file_id, topic, description, file_name, file_size, upload_date, download_count
-            FROM files
-            WHERE (grade = %s OR grade = 'دوازدهم') AND field = %s AND subject = %s
-            ORDER BY upload_date DESC
-            """
-            results = db.execute_query(query, (grade, field, subject), fetchall=True)
-        else:
-            query = """
-            SELECT file_id, topic, description, file_name, file_size, upload_date, download_count
-            FROM files
-            WHERE grade = %s AND field = %s AND subject = %s
-            ORDER BY upload_date DESC
-            """
-            results = db.execute_query(query, (grade, field, subject), fetchall=True)
-        
-        files = []
-        if results:
-            for row in results:
-                files.append({
-                    "file_id": row[0],
-                    "topic": row[1],
-                    "description": row[2],
-                    "file_name": row[3],
-                    "file_size": row[4],
-                    "upload_date": row[5],
-                    "download_count": row[6]
-                })
-        
-        return files
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت فایل‌های درس: {e}")
-        return []
-
-def get_file_by_id(file_id: int) -> Optional[Dict]:
-    """دریافت اطلاعات فایل بر اساس ID"""
-    try:
-        query = """
-        SELECT file_id, grade, field, subject, topic, description,
-               telegram_file_id, file_name, file_size, mime_type,
-               upload_date, download_count, uploader_id
-        FROM files
-        WHERE file_id = %s
-        """
-        
-        result = db.execute_query(query, (file_id,), fetch=True)
-        
-        if result:
-            return {
-                "file_id": result[0],
-                "grade": result[1],
-                "field": result[2],
-                "subject": result[3],
-                "topic": result[4],
-                "description": result[5],
-                "telegram_file_id": result[6],
-                "file_name": result[7],
-                "file_size": result[8],
-                "mime_type": result[9],
-                "upload_date": result[10],
-                "download_count": result[11],
-                "uploader_id": result[12]
-            }
-        
+def create_plan_from_ai_response(user_id: int, user_data: Dict, ai_response: Dict) -> Optional[int]:
+    subjects = ai_response.get('subjects', [])
+    if not subjects:
         return None
+    
+    level = user_data.get('plan_level', 0)
+    parts = []
+    current_time = 8 * 60
+    
+    for idx, subj in enumerate(subjects):
+        duration = subj.get('duration', user_data.get('focus_duration', 45))
+        duration = max(20, min(90, duration))
         
+        grade = 3
+        if subj.get('priority') == 'high':
+            grade = 4
+        elif subj.get('priority') == 'low':
+            grade = 2
+        
+        start_h = current_time // 60
+        start_m = current_time % 60
+        end_time = current_time + duration
+        end_h = end_time // 60
+        end_m = end_time % 60
+        
+        part = {
+            "part_number": idx + 1,
+            "title": subj.get('subject', 'مطالعه'),
+            "topic": subj.get('topic', ''),
+            "grade": grade,
+            "planned_minutes": duration,
+            "pages": 0,
+            "time_slot": f"{start_h:02d}:{start_m:02d}-{end_h:02d}:{end_m:02d}",
+            "planned_start_time": f"{start_h:02d}:{start_m:02d}",
+            "planned_end_time": f"{end_h:02d}:{end_m:02d}",
+            "completed": False,
+            "is_fixed_time": False,
+            "reason": subj.get('reason', '')
+        }
+        parts.append(part)
+        
+        break_after = ai_response.get('breaks', [])
+        if break_after and idx < len(subjects) - 1:
+            break_duration = break_after[0].get('duration', 10) if idx < len(break_after) else 10
+            current_time = end_time + break_duration
+        else:
+            current_time = end_time + 5
+    
+    session_id = save_session_with_parts(user_id, parts, [], subjects, level)
+    
+    if session_id:
+        if level == 3:
+            alerts = ai_response.get('alerts', [])
+            for alert in alerts:
+                try:
+                    alert_time_str = alert.get('time', '')
+                    if alert_time_str:
+                        h, m = map(int, alert_time_str.split(':'))
+                        alert_dt = get_iran_now().replace(hour=h, minute=m, second=0, microsecond=0)
+                        if alert_dt < get_iran_now():
+                            alert_dt += timedelta(days=1)
+                        
+                        for part in parts:
+                            if part.get('title') in alert.get('message', ''):
+                                execute_query(
+                                    """INSERT INTO daily_alerts (user_id, part_id, alert_time, message)
+                                       VALUES (%s, %s, %s, %s)""",
+                                    (user_id, part.get('part_id'), alert_dt, alert.get('message', ''))
+                                )
+                                break
+                except Exception as e:
+                    logger.error(f"خطا در ذخیره اعلان: {e}")
+        
+        return session_id
+    
+    return None
+
+# ==================== ساخت دستی برنامه ====================
+
+def parse_manual_times(time_text: str) -> List[Tuple[str, str]]:
+    time_slots = []
+    lines = time_text.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        start, end = parse_time_slot(line)
+        if start and end:
+            time_slots.append((start, end))
+    
+    return time_slots
+
+def parse_manual_activities(activity_text: str) -> List[Dict]:
+    activities = []
+    lines = activity_text.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        parts = line.split('|')
+        if len(parts) >= 2:
+            title = parts[0].strip()
+            try:
+                duration = int(parts[1].strip().replace('دقیقه', '').strip())
+                priority = parts[2].strip() if len(parts) > 2 else 'متوسط'
+                
+                grade = 3
+                if priority in ['بالا', 'زیاد', 'high']:
+                    grade = 4
+                elif priority in ['پایین', 'کم', 'low']:
+                    grade = 2
+                
+                activities.append({
+                    "title": title,
+                    "duration": duration,
+                    "grade": grade,
+                    "priority": priority
+                })
+            except:
+                continue
+    
+    return activities
+
+def create_manual_plan(user_id: int, time_slots: List[Tuple[str, str]], activities: List[Dict]) -> Optional[int]:
+    if not time_slots or not activities:
+        return None
+    
+    if len(time_slots) != len(activities):
+        return None
+    
+    parts = []
+    for i, (slot, activity) in enumerate(zip(time_slots, activities)):
+        start_time, end_time = slot
+        
+        start_min = time_to_minutes(start_time)
+        end_min = time_to_minutes(end_time)
+        duration = end_min - start_min
+        
+        if activity.get('duration', 0) > 0:
+            duration = activity['duration']
+        
+        part = {
+            "part_number": i + 1,
+            "title": activity['title'],
+            "topic": "",
+            "grade": activity.get('grade', 3),
+            "planned_minutes": duration,
+            "pages": 0,
+            "time_slot": f"{start_time}-{end_time}",
+            "planned_start_time": start_time,
+            "planned_end_time": end_time,
+            "completed": False,
+            "is_fixed_time": True,
+            "reason": f"اولویت: {activity.get('priority', 'متوسط')}"
+        }
+        parts.append(part)
+    
+    session_id = save_session_with_parts(user_id, parts, [], [], 0)
+    return session_id
+
+# ==================== تایمر ====================
+active_timers = {}
+timer_data = {}
+
+async def update_timer(context: ContextTypes.DEFAULT_TYPE) -> None:
+    job_data = context.job.data
+    chat_id = job_data.get("chat_id")
+    part_id = job_data.get("part_id")
+    start_time = job_data.get("start_time")
+    timer_message_id = job_data.get("timer_message_id")
+    total_minutes = job_data.get("total_minutes", 0)
+    elapsed_offset = job_data.get("elapsed_offset", 0)
+    
+    elapsed = elapsed_offset + int((datetime.now(IRAN_TZ) - start_time).total_seconds())
+    minutes = elapsed // 60
+    seconds = elapsed % 60
+    
+    query = """
+    SELECT title, planned_minutes, completed
+    FROM study_parts
+    WHERE part_id = %s
+    """
+    result = execute_query(query, (part_id,), fetch=True)
+    
+    if not result:
+        context.job.schedule_removal()
+        if part_id in active_timers:
+            del active_timers[part_id]
+        if part_id in timer_data:
+            del timer_data[part_id]
+        return
+    
+    title, planned_minutes, completed = result
+    
+    if completed:
+        context.job.schedule_removal()
+        if part_id in active_timers:
+            del active_timers[part_id]
+        if part_id in timer_data:
+            del timer_data[part_id]
+        return
+    
+    if elapsed >= total_minutes * 60:
+        context.job.schedule_removal()
+        if part_id in active_timers:
+            del active_timers[part_id]
+        if part_id in timer_data:
+            del timer_data[part_id]
+        
+        try:
+            await context.bot.edit_message_text(
+                f"✅ **تایمر {title} به پایان رسید!**\n\n"
+                f"⏱ زمان: {total_minutes} دقیقه\n"
+                f"🎯 هدف کامل شد!",
+                chat_id=chat_id,
+                message_id=timer_message_id,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"خطا در ارسال پیام پایان تایمر: {e}")
+        return
+    
+    progress = min(100, int((elapsed / (total_minutes * 60)) * 100))
+    
+    bar_length = 20
+    filled = int(bar_length * progress / 100)
+    bar = "█" * filled + "░" * (bar_length - filled)
+    
+    remaining_seconds = (total_minutes * 60) - elapsed
+    remaining_minutes = remaining_seconds // 60
+    remaining_secs = remaining_seconds % 60
+    
+    message_text = f"⏱ **تایمر: {title}**\n\n"
+    message_text += f"⏳ زمان سپری شده: {minutes:02d}:{seconds:02d}\n"
+    message_text += f"⏳ زمان باقی‌مانده: {remaining_minutes:02d}:{remaining_secs:02d}\n"
+    message_text += f"📊 پیشرفت: {progress}%\n"
+    message_text += f"`{bar}`\n"
+    message_text += f"🎯 هدف: {total_minutes} دقیقه"
+    
+    if remaining_minutes <= 2:
+        message_text += f"\n\n⚠️ **{remaining_minutes} دقیقه تا پایان!**"
+    
+    try:
+        if timer_message_id:
+            await context.bot.edit_message_text(
+                message_text,
+                chat_id=chat_id,
+                message_id=timer_message_id,
+                parse_mode=ParseMode.HTML
+            )
     except Exception as e:
-        logger.error(f"خطا در دریافت فایل: {e}")
+        logger.error(f"خطا در آپدیت تایمر: {e}")
+
+# ==================== توابع تفسیر AI برای تغییرات ====================
+
+async def interpret_plan_change_request(user_text: str, current_plan: Dict) -> Optional[Dict]:
+    """تفسیر درخواست تغییر برنامه با AI و برگرداندن JSON ساختاریافته"""
+    
+    parts_summary = ""
+    if current_plan and current_plan.get("parts"):
+        for p in current_plan["parts"]:
+            status = "✅" if p.get("completed") else "⬜"
+            parts_summary += f"- {status} {p.get('title')} ({p.get('planned_minutes')}د) {p.get('time_slot', '')}\n"
+    else:
+        parts_summary = "هیچ برنامه‌ای وجود ندارد"
+    
+    prompt = f"""شما یک دستیار هوشمند هستید که درخواست‌های تغییر برنامه مطالعه را تفسیر می‌کنید.
+
+=== برنامه فعلی ===
+{parts_summary}
+
+=== درخواست کاربر ===
+{user_text}
+
+=== وظیفه ===
+درخواست کاربر را تحلیل کن و یک JSON دقیق برای تغییر برنامه تولید کن.
+
+نوع تغییرات ممکن:
+1. **add**: اضافه کردن یک پارت جدید
+2. **delete**: حذف یک پارت
+3. **update**: تغییر یک پارت موجود (زمان، مدت، عنوان)
+4. **clear**: پاک کردن همه پارت‌ها
+
+خروجی JSON:
+{{
+  "action": "add|delete|update|clear",
+  "target": {{
+    "title": "نام درس یا عنوان پارت",
+    "current_title": "عنوان فعلی (برای update)",
+    "duration": 45,
+    "time_slot": "09:00-09:45",
+    "start_time": "09:00",
+    "end_time": "09:45",
+    "grade": 3,
+    "topic": "مبحث خاص"
+  }},
+  "reason": "دلیل این تغییر"
+}}
+
+اگر درخواست کاربر مبهم است، action را "unknown" قرار بده و در reason توضیح بده.
+
+فقط JSON را برگردان، هیچ متن اضافی دیگری ننویس.
+"""
+    
+    response = await call_ai(prompt, max_tokens=500, temperature=0.2)
+    if not response:
+        return None
+    
+    try:
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        return None
+    except:
         return None
 
-def increment_download_count(file_id: int) -> bool:
-    """افزایش شمارنده دانلود فایل"""
-    try:
-        query = """
-        UPDATE files
-        SET download_count = download_count + 1
-        WHERE file_id = %s
-        """
-        db.execute_query(query, (file_id,))
-        return True
-    except Exception as e:
-        logger.error(f"خطا در به‌روزرسانی شمارنده دانلود: {e}")
-        return False
+# ==================== هندلرهای اصلی ====================
 
-def get_all_files() -> List[Dict]:
-    """دریافت همه فایل‌ها (برای ادمین)"""
-    try:
-        logger.info("🔍 دریافت همه فایل‌ها از دیتابیس")
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    telegram_id = str(user.id)
+    
+    user_data = get_user_data(telegram_id)
+    
+    if user_data and user_data.get("is_onboarded"):
+        level = user_data.get('plan_level', 0)
+        level_name = get_plan_level_name(level)
+        level_emoji = get_plan_level_emoji(level)
         
-        query = """
-        SELECT file_id, grade, field, subject, topic, file_name, 
-               file_size, upload_date, download_count
-        FROM files
-        ORDER BY upload_date DESC
-        LIMIT 100
-        """
+        if not get_user_quota(user_data["id"]):
+            init_user_quota(user_data["id"])
         
-        results = db.execute_query(query, fetchall=True)
-        
-        logger.info(f"🔍 تعداد کل فایل‌ها در دیتابیس: {len(results) if results else 0}")
-        
-        files = []
-        if results:
-            for row in results:
-                files.append({
-                    "file_id": row[0],
-                    "grade": row[1],
-                    "field": row[2],
-                    "subject": row[3],
-                    "topic": row[4],
-                    "file_name": row[5],
-                    "file_size": row[6],
-                    "upload_date": row[7],
-                    "download_count": row[8]
-                })
-                logger.info(f"📄 فایل {row[0]}: {row[1]} {row[2]} - {row[3]} - {row[5]}")
-        
-        return files
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در دریافت همه فایل‌ها: {e}", exc_info=True)
-        return []
-
-def delete_file(file_id: int) -> bool:
-    """حذف فایل"""
-    try:
-        query = "DELETE FROM files WHERE file_id = %s"
-        db.execute_query(query, (file_id,))
-        logger.info(f"فایل حذف شد: {file_id}")
-        return True
-    except Exception as e:
-        logger.error(f"خطا در حذف فایل: {e}")
-        return False
-
-# -----------------------------------------------------------
-# کیبوردهای ساده (بدون اینلاین)
-# -----------------------------------------------------------
-
-
-
-
-def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """منوی اصلی با رنگ‌های درخواستی"""
-    keyboard = [
-        [
-            {"text": "➕ ثبت مطالعه", "style": "success"},     # سبز
-        ],
-        [
-            {"text": "📚 منابع", "style": "primary"},          # آبی
-        ],
-        [
-            {"text": "🎫 کوپن", "style": "success"},           # سبز
-        ],
-        [
-            {"text": "🏆 رتبه‌بندی", "style": "primary"},      # آبی
-        ],
-    ]
-
-    return ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True,
-        one_time_keyboard=False,
-        input_field_placeholder="یکی از گزینه‌ها را انتخاب کنید..."
-    )
-def get_subjects_keyboard_reply() -> ReplyKeyboardMarkup:
-    """کیبورد انتخاب درس"""
-    keyboard = []
-    row = []
-    
-    # اضافه کردن 11 درس اول در 3 ردیف
-    for i, subject in enumerate(SUBJECTS[:-1]):  # همه به جز "سایر"
-        row.append(subject)
-        if len(row) == 3:  # هر ردیف 3 دکمه
-            keyboard.append(row)
-            row = []
-    
-    # اضافه کردن ردیف آخر اگر درس‌های باقی مانده وجود دارد
-    if row:
-        keyboard.append(row)
-    
-    # اضافه کردن "سایر" در یک ردیف جداگانه
-    keyboard.append(["سایر"])
-    
-    keyboard.append(["🔙 بازگشت"])
-    
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_time_selection_keyboard_reply() -> ReplyKeyboardMarkup:
-    """کیبورد انتخاب زمان"""
-    keyboard = []
-    
-    for text, minutes in SUGGESTED_TIMES:
-        keyboard.append([text])
-    
-    keyboard.append(["✏️ زمان دلخواه", "🔙 بازگشت"])
-    
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_admin_keyboard_reply() -> ReplyKeyboardMarkup:
-    """منوی ادمین - به‌روزرسانی شده"""
-    keyboard = [
-        ["📤 آپلود فایل", "👥 درخواست‌ها"],
-        ["👤 لیست کاربران", "📩 ارسال پیام"],
-        ["📁 مدیریت فایل‌ها", "🎫 مدیریت کوپن"],  # تغییر اینجا
-        ["📊 آمار ربات", "🏠 منوی اصلی"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
-
-def get_admin_requests_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد مدیریت درخواست‌های ادمین"""
-    keyboard = [
-        ["✅ تأیید همه", "❌ رد همه"],
-        ["👁 مشاهده جزئیات", "🔄 به‌روزرسانی"],
-        ["🔙 بازگشت"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_file_subjects_keyboard(user_files: List[Dict]) -> ReplyKeyboardMarkup:
-    """کیبورد انتخاب درس برای منابع"""
-    subjects = list(set([f["subject"] for f in user_files]))
-    keyboard = []
-    row = []
-    
-    for subject in subjects[:6]:
-        row.append(subject)
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
-    
-    if row:
-        keyboard.append(row)
-    
-    keyboard.append(["🔙 بازگشت"])
-    
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_admin_file_management_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد مدیریت فایل‌های ادمین"""
-    keyboard = [
-        ["🗑 حذف فایل", "📋 لیست فایل‌ها"],
-        ["🔄 به‌روزرسانی", "🔙 بازگشت"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_after_study_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد پس از اتمام مطالعه"""
-    keyboard = [
-        ["📖 منابع این درس", "🏆 رتبه‌بندی"],
-        ["➕ مطالعه جدید", "🏠 منوی اصلی"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_complete_study_keyboard() -> ReplyKeyboardMarkup:
-    """کیبورد اتمام مطالعه"""
-    keyboard = [[KeyboardButton("✅ اتمام مطالعه")]]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-# -----------------------------------------------------------
-# هندلرهای دستورات
-# -----------------------------------------------------------
-async def coupon_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """هندلر منوی کوپن"""
-    user_id = update.effective_user.id
-    
-    if not is_user_active(user_id):
         await update.message.reply_text(
-            "❌ حساب کاربری شما فعال نیست.\n"
-            "لطفا منتظر تأیید ادمین باشید."
+            f"🎯 سلام {user.full_name}! به کمپ خوش آمدید.\n\n"
+            f"📚 امروز {get_today_shamsi()} - ساعت {get_iran_time_str()}\n"
+            f"📊 سطح برنامه: {level_emoji} {level_name}\n"
+            f"💬 پیام‌های باقی‌مانده AI: {get_remaining_messages(user_data['id'])}\n\n"
+            "برای شروع، دکمه‌های منو رو بزن.",
+            reply_markup=get_main_keyboard(),
+            parse_mode=ParseMode.HTML
         )
         return
     
-    await update.message.reply_text(
-        "🎫 **سیستم کوپن‌ها**\n\n"
-        "هر کوپن معادل ۴۰,۰۰۰ تومان ارزش دارد\n\n"
-        "📋 خدمات قابل خرید با کوپن:",
-        reply_markup=get_coupon_main_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-# -----------------------------------------------------------
-# 9. هندلر انتخاب خدمت کوپن
-# -----------------------------------------------------------
-
-async def handle_coupon_service_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, service: str) -> None:
-    """پردازش انتخاب خدمت کوپن"""
-    user_id = update.effective_user.id
-    
-    # تعیین قیمت خدمت
-    service_prices = {
-        "📞 تماس تلفنی": {"price": 1, "name": "تماس تلفنی (۱۰ دقیقه)"},  # تغییر اینجا
-        "📊 تحلیل گزارش": {"price": 1, "name": "تحلیل گزارش کار"},
-        "✏️ تصحیح آزمون": {"price": 1, "name": "تصحیح آزمون تشریحی"},
-        "📈 تحلیل آزمون": {"price": 1, "name": "تحلیل آزمون"},
-        "📝 آزمون شخصی": {"price": 2, "name": "آزمون شخصی"}
+    context.user_data["onboarding_step"] = 0
+    context.user_data["onboarding_data"] = {
+        "telegram_id": telegram_id,
+        "username": user.username,
+        "full_name": user.full_name
     }
     
-    # 🔴 اصلاح: نام خدمت با کیبورد مطابقت ندارد
-    # از service که مستقیماً دریافت شده استفاده می‌کنیم
-    
-    if service == "🔗 برنامه شخصی":
-        await handle_free_program(update, context)
-        return
-    
-    # 🔴 اصلاح: بررسی نام خدمت در دیکشنری
-    # برخی خدمات ممکن است پسوند قیمت داشته باشند
-    service_key = service
-    if "(" in service:
-        # اگر فرمت "خدمت (X کوپن)" بود
-        service_key = service.split("(")[0].strip()
-    
-    # اگر هنوز پیدا نشد، سعی کن با مقایسه بخشی از نام پیدا کنی
-    if service_key not in service_prices:
-        for key in service_prices:
-            if key in service_key or service_key in key:
-                service_key = key
-                break
-    
-    if service_key not in service_prices:
-        await update.message.reply_text("❌ خدمت انتخاب شده نامعتبر است.")
-        return
-    
-    service_info = service_prices[service_key]
-    context.user_data["selected_service"] = service_info
-    
-    # بررسی کوپن‌های کاربر
-    active_coupons = get_user_coupons(user_id, "active")
-    
-    if len(active_coupons) >= service_info["price"]:
-        # کاربر کوپن کافی دارد
-        context.user_data["awaiting_coupon_selection"] = True
-        
-        coupon_list = "📋 **کوپن‌های فعال شما:**\n\n"
-        for i, coupon in enumerate(active_coupons[:5], 1):
-            source_emoji = "⏰" if coupon["source"] == "study_streak" else "💳"
-            coupon_list += f"{i}. {source_emoji} `{coupon['coupon_code']}` - {coupon['earned_date']}\n"
-        
-        if len(active_coupons) > 5:
-            coupon_list += f"\n📊 و {len(active_coupons)-5} کوپن دیگر...\n"
-        
-        coupon_list += f"\n🎯 برای {service_info['name']} نیاز به {service_info['price']} کوپن دارید."
-        
-        if service_info["price"] == 1:
-            coupon_list += "\n📝 لطفا کد کوپن مورد نظر را وارد کنید:"
-            await update.message.reply_text(
-                coupon_list,
-                reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True),
-                parse_mode=ParseMode.MARKDOWN
-            )
-        else:
-            coupon_list += "\n📝 لطفا کدهای کوپن را با کاما جدا کنید (مثال: FT123,FT456):"
-            await update.message.reply_text(
-                coupon_list,
-                reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True),
-                parse_mode=ParseMode.MARKDOWN
-            )
-    else:
-        # کاربر کوپن کافی ندارد
-        context.user_data["awaiting_purchase_method"] = True
-        
-        missing = service_info["price"] - len(active_coupons)
-        
-        text = f"""
-📋 **{service_info['name']}**
+    await update.message.reply_text(
+        "👋 سلام! به ربات هوشمند مطالعه خوش اومدی!\n\n"
+        "📋 لطفاً به سوالات زیر جواب بده:\n\n"
+        "❓ هدف اصلی‌ات از مطالعه چیه؟\n"
+        "[کنکور] [معدل] [تقویت پایه] [✏️ سایر]",
+        reply_markup=ReplyKeyboardMarkup(
+            [["کنکور"], ["معدل"], ["تقویت پایه"], ["✏️ سایر"]],
+            resize_keyboard=True, one_time_keyboard=True
+        )
+    )
 
-💰 قیمت: {service_info['price']} کوپن
-
-📊 **وضعیت کوپن‌های شما:**
-• کوپن‌های فعال: {len(active_coupons)}
-• نیاز به {missing} کوپن دیگر
-
-🛒 **روش‌های دریافت کوپن:**
-"""
+async def onboarding_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text.strip()
+    step = context.user_data.get("onboarding_step", 0)
+    data = context.user_data.get("onboarding_data", {})
+    
+    if step == 0:
+        if text == "✏️ سایر":
+            await update.message.reply_text("✏️ لطفاً هدف خودت رو بنویس:")
+            context.user_data["awaiting_custom"] = "goal"
+            return
+        data["goal"] = text
+        context.user_data["onboarding_step"] = 1
         await update.message.reply_text(
-            text,
-            reply_markup=get_coupon_method_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
-)
-
-# -----------------------------------------------------------
-# 10. هندلر برنامه شخصی رایگان
-# -----------------------------------------------------------
-
-async def handle_free_program(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پردازش برنامه شخصی رایگان"""
-    text = """
-🔗 **برنامه شخصی رایگان**
-
-📋 شرایط دریافت:
-۱. عضویت در کانل KonkorofKings
-۲. فعال بودن اشتراک
-
-📢 **لینک کانال:**
-https://t.me/konkorofkings
-
-✅ پس از عضویت، دکمه زیر را بزنید:
-"""
+            "❓ پایه تحصیلی‌ات چیه؟\n"
+            "[دهم] [یازدهم] [دوازدهم] [دانشجو] [✏️ سایر]",
+            reply_markup=ReplyKeyboardMarkup(
+                [["دهم"], ["یازدهم"], ["دوازدهم"], ["دانشجو"], ["✏️ سایر"]],
+                resize_keyboard=True, one_time_keyboard=True
+            )
+        )
     
-    keyboard = [
-        ["✅ تأیید عضویت"],
-        ["🔙 بازگشت"]
-    ]
+    elif step == 1:
+        if text == "✏️ سایر":
+            await update.message.reply_text("✏️ لطفاً پایه خودت رو بنویس:")
+            context.user_data["awaiting_custom"] = "grade"
+            return
+        data["grade"] = text
+        context.user_data["onboarding_step"] = 2
+        await update.message.reply_text(
+            "❓ رشته‌ات چیه؟\n"
+            "[ریاضی] [تجربی] [انسانی] [سایر] [✏️ سایر]",
+            reply_markup=ReplyKeyboardMarkup(
+                [["ریاضی"], ["تجربی"], ["انسانی"], ["سایر"], ["✏️ سایر"]],
+                resize_keyboard=True, one_time_keyboard=True
+            )
+        )
+    
+    elif step == 2:
+        if text == "✏️ سایر":
+            await update.message.reply_text("✏️ لطفاً رشته خودت رو بنویس:")
+            context.user_data["awaiting_custom"] = "field"
+            return
+        data["field"] = text
+        context.user_data["onboarding_step"] = 3
+        await update.message.reply_text(
+            "❓ تاریخ کنکور یا آزمون مهم رو بگو (مثلاً 1404/04/15):\n"
+            "(اگر ندارید، 'ندارم' رو بزنید)",
+            reply_markup=ReplyKeyboardMarkup(
+                [["ندارم"]],
+                resize_keyboard=True, one_time_keyboard=True
+            )
+        )
+    
+    elif step == 3:
+        if text != "ندارم":
+            try:
+                parts = text.split("/")
+                if len(parts) == 3:
+                    year, month, day = map(int, parts)
+                    jdate = jdatetime.date(year, month, day)
+                    data["exam_date"] = jdate.togregorian().strftime("%Y-%m-%d")
+            except:
+                data["exam_date"] = None
+        else:
+            data["exam_date"] = None
+        
+        context.user_data["onboarding_step"] = 4
+        await update.message.reply_text(
+            "❓ چند درصد از کل مطالب رو خوندی؟\n"
+            "[کمتر از ۲۰%] [۲۰-۴۰%] [۴۰-۶۰%] [۶۰-۸۰%] [بیشتر از ۸۰%]",
+            reply_markup=ReplyKeyboardMarkup(
+                [["کمتر از ۲۰%"], ["۲۰-۴۰%"], ["۴۰-۶۰%"], ["۶۰-۸۰%"], ["بیشتر از ۸۰%"]],
+                resize_keyboard=True, one_time_keyboard=True
+            )
+        )
+    
+    elif step == 4:
+        data["progress_estimate"] = text
+        context.user_data["onboarding_step"] = 5
+        await update.message.reply_text(
+            "❓ بهترین زمان مطالعه‌ت کیه؟\n"
+            "[صبح] [عصر] [شب]",
+            reply_markup=ReplyKeyboardMarkup(
+                [["صبح"], ["عصر"], ["شب"]],
+                resize_keyboard=True, one_time_keyboard=True
+            )
+        )
+    
+    elif step == 5:
+        data["peak_time"] = text
+        context.user_data["onboarding_step"] = 6
+        await update.message.reply_text(
+            "❓ درس‌هایی که ضعیفی رو بگو (مثلاً: ریاضی، فیزیک):",
+            reply_markup=ReplyKeyboardMarkup(
+                [["رد کردن"]],
+                resize_keyboard=True, one_time_keyboard=True
+            )
+        )
+    
+    elif step == 6:
+        if text != "رد کردن":
+            data["weak_subjects"] = [s.strip() for s in text.split("،") if s.strip()]
+        else:
+            data["weak_subjects"] = []
+        
+        context.user_data["onboarding_step"] = 7
+        await update.message.reply_text(
+            "❓ چقدر می‌تونی تمرکز کنی؟\n"
+            "[۲۰ دقیقه] [۳۰ دقیقه] [۴۵ دقیقه] [۶۰ دقیقه] [۹۰ دقیقه]",
+            reply_markup=ReplyKeyboardMarkup(
+                [["۲۰ دقیقه"], ["۳۰ دقیقه"], ["۴۵ دقیقه"], ["۶۰ دقیقه"], ["۹۰ دقیقه"]],
+                resize_keyboard=True, one_time_keyboard=True
+            )
+        )
+    
+    elif step == 7:
+        try:
+            focus = int(text.replace("دقیقه", "").strip())
+            data["focus_duration"] = focus
+        except:
+            data["focus_duration"] = 45
+        
+        data["is_onboarded"] = True
+        data["plan_level"] = 0
+        
+        user_id = save_user(data)
+        
+        if user_id:
+            init_user_quota(user_id)
+            
+            await update.message.reply_text(
+                "✅ **ثبت‌نام شما با موفقیت انجام شد!**\n\n"
+                f"📚 هدف: {data.get('goal')}\n"
+                f"🎓 پایه: {data.get('grade')}\n"
+                f"🧪 رشته: {data.get('field')}\n"
+                f"🌱 سطح برنامه: اولیه\n"
+                f"💬 ۱۰ پیام رایگان AI برای آزمایش\n\n"
+                "🧠 در حال ساخت برنامه اولیه...",
+                reply_markup=get_main_keyboard(),
+                parse_mode=ParseMode.HTML
+            )
+            
+            await generate_initial_plan(update, context, user_id, data)
+        else:
+            await update.message.reply_text(
+                "❌ خطا در ثبت اطلاعات. لطفاً دوباره /start رو بزن.",
+                reply_markup=get_main_keyboard()
+            )
+
+async def generate_initial_plan(update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                                user_id: int, user_data: Dict) -> None:
+    level = calculate_plan_level(user_id)
+    user_data['plan_level'] = level
+    update_user_plan_level(user_id, level)
+    
+    wait_msg = await update.message.reply_text("🧠 در حال ساخت برنامه شخصی‌سازی‌شده...")
+    
+    ai_response = await generate_plan_with_ai(user_id, user_data)
+    
+    await wait_msg.delete()
+    
+    if ai_response and ai_response.get('subjects'):
+        session_id = create_plan_from_ai_response(user_id, user_data, ai_response)
+        
+        if session_id:
+            plan = get_plan_by_date(user_id, get_today_date())
+            if plan:
+                context.user_data["current_plan"] = plan
+                await show_parts_initial(update, context, plan["parts"])
+                return
+    
+    await update.message.reply_text(
+        "📝 **برنامه‌ای برای امروز وجود ندارد.**\n\n"
+        "چگونه می‌خواهید برنامه امروز را بسازید؟",
+        reply_markup=get_build_plan_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+
+# ==================== نمایش پارت‌ها ====================
+
+async def show_parts_initial(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: List[Dict]) -> None:
+    if not parts:
+        await update.message.reply_text("❌ هیچ پارتی وجود ندارد.", reply_markup=get_main_keyboard())
+        return
+    
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    user_data = get_user_data(str(update.effective_user.id)) if user_id else None
+    level = user_data.get('plan_level', 0) if user_data else 0
+    level_name = get_plan_level_name(level)
+    level_emoji = get_plan_level_emoji(level)
+    
+    text = f"📋 **برنامه پیشنهادی** {level_emoji} سطح {level_name}\n\n"
+    text += f"📊 تعداد پارت‌ها: {len(parts)}\n"
+    text += f"⏱ زمان کل: {format_time_hours_minutes(sum(p['planned_minutes'] for p in parts))}\n\n"
+    
+    for part in sorted(parts, key=lambda x: x.get("part_number", 0)):
+        grade_emoji = GRADE_RULES.get(part.get("grade", 3), GRADE_RULES[3])["emoji"]
+        planned_start = part.get("planned_start_time") or part.get("planned_start") or ""
+        planned_end = part.get("planned_end_time") or part.get("planned_end") or ""
+        time_info = ""
+        if planned_start and planned_end:
+            time_info = f" {planned_start}-{planned_end}"
+        elif part.get("time_slot"):
+            time_info = f" {part['time_slot']}"
+        text += f"{part['part_number']}. ⬜ {grade_emoji} {part['title']} ({part['planned_minutes']}د){time_info} ↕️\n"
+    
+    text += "\n🔧 **مرحله اول: تنظیم ترتیب پارت‌ها**\n"
+    text += "• با زدن دکمه <b>↕️</b> کنار هر پارت، آن پارت یک ردیف بالا می‌رود\n"
+    text += "• بعد از رضایت، دکمه <b>تایید برنامه</b> رو بزن"
+    
+    if level >= 2:
+        text += f"\n\n💡 **توصیه‌های سطح {level_name}:**\n"
+        if level == 2:
+            text += "• این برنامه بر اساس ۷ روز داده شما شخصی‌سازی شده است\n"
+            text += "• درس ضعیف شما در بهترین زمان قرار داده شده است"
+        elif level == 3:
+            text += "• برنامه شناور با زمان‌بندی دقیق تنظیم شده است\n"
+            text += "• اعلان‌ها ۱۰ دقیقه قبل از هر جلسه ارسال می‌شوند\n"
+            text += "• در صورت تاخیر، برنامه به‌صورت خودکار تطبیق داده می‌شود"
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=get_part_buttons_initial(parts),
+        parse_mode=ParseMode.HTML
+    )
+
+async def show_parts_final(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: List[Dict], show_date: bool = False) -> None:
+    if not parts:
+        await update.message.reply_text("📭 هیچ پارتی وجود ندارد.", reply_markup=get_main_keyboard())
+        return
+    
+    sorted_parts = sorted(parts, key=lambda x: x.get("part_number", 0))
+    
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    user_data = get_user_data(str(update.effective_user.id)) if user_id else None
+    level = user_data.get('plan_level', 0) if user_data else 0
+    level_name = get_plan_level_name(level)
+    level_emoji = get_plan_level_emoji(level)
+    
+    text = f"📋 برنامه نهایی {level_emoji} سطح {level_name}\n\n"
+    
+    if show_date:
+        date_str = context.user_data.get("selected_date", "")
+        if not date_str:
+            date_str = get_today_date()
+        shamsi = get_shamsi_date(date_str)
+        text = f"📋 برنامه {shamsi} {level_emoji} سطح {level_name}\n\n"
+    
+    total_parts = len(sorted_parts)
+    completed_parts = sum(1 for p in sorted_parts if p.get("completed", False))
+    total_minutes = sum(p.get("planned_minutes", 0) for p in sorted_parts)
+    
+    text += f"📊 تعداد پارت‌ها: {total_parts}\n"
+    text += f"✅ انجام شده: {completed_parts}\n"
+    text += f"⬜ انجام نشده: {total_parts - completed_parts}\n"
+    text += f"⏱ زمان کل: {format_time_hours_minutes(total_minutes)}\n\n"
+    
+    for part in sorted_parts:
+        status = "✅" if part.get("completed", False) else "⬜"
+        grade_emoji = GRADE_RULES.get(part.get("grade", 3), GRADE_RULES[3])["emoji"]
+        planned_start = part.get("planned_start_time") or part.get("planned_start") or ""
+        planned_end = part.get("planned_end_time") or part.get("planned_end") or ""
+        time_info = ""
+        if planned_start and planned_end:
+            time_info = f" {planned_start}-{planned_end}"
+        elif part.get("time_slot"):
+            time_info = f" {part['time_slot']}"
+        actual_info = ""
+        if part.get("completed", False) and part.get("actual_minutes", 0) > 0:
+            actual_info = f" (زمان واقعی: {part['actual_minutes']}د)"
+        part_num = part.get("part_number", 0)
+        reason = f" 📝 {part.get('reason', '')}" if part.get('reason') else ""
+        if part.get("completed", False):
+            text += f"{part_num}. ✅ {grade_emoji} {part['title']} ({part.get('planned_minutes', 0)}د){time_info}{actual_info}{reason}\n"
+        else:
+            text += f"{part_num}. ⬜ {grade_emoji} {part['title']} ({part.get('planned_minutes', 0)}د){time_info}{actual_info}{reason}\n"
+    
+    text += "\n⏰ مرحله دوم: اجرا و تکمیل\n"
+    text += "• روی هر پارت کلیک کن تا دکمه‌های عملیاتی نمایش داده شوند\n"
+    text += "• برای اضافه کردن فعالیت جدید، دکمه ➕ اضافه کردن فعالیت رو بزن\n"
+    text += "• برای پایان برنامه، دکمه ✅ اتمام برنامه رو بزن"
+    
+    last_change = get_last_change(user_id) if user_id else None
+    if last_change:
+        text += f"\n\n🔙 **یک تغییر قابل برگشت وجود دارد:**\n"
+        text += f"• {last_change['action_type']} - {last_change['created_at'].strftime('%H:%M')}"
+    
+    if level >= 3:
+        text += "\n\n🔔 **اعلان‌های امروز:**\n"
+        alerts = execute_query(
+            "SELECT message, alert_time FROM daily_alerts WHERE user_id = %s AND sent = FALSE",
+            (user_id,),
+            fetchall=True
+        )
+        if alerts:
+            for alert in alerts:
+                text += f"• {alert[1].strftime('%H:%M')}: {alert[0]}\n"
+        else:
+            text += "• هیچ اعلان فعالی وجود ندارد"
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=get_part_buttons_final(sorted_parts, show_date),
+        parse_mode=ParseMode.HTML
+    )
+
+async def show_part_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, part_id: int) -> None:
+    plan = context.user_data.get("current_plan", {})
+    parts = plan.get("parts", [])
+    
+    part = next((p for p in parts if p.get("part_id") == part_id), None)
+    
+    if not part:
+        query = """
+        SELECT part_id, part_number, title, grade, planned_minutes, actual_minutes,
+               time_slot, completed, pages, planned_start_time, planned_end_time,
+               is_fixed_time, delay_minutes, reason
+        FROM study_parts
+        WHERE part_id = %s
+        """
+        db_result = execute_query(query, (part_id,), fetch=True)
+        if not db_result:
+            await update.message.reply_text("❌ پارت یافت نشد.")
+            return
+        planned_start = db_result[9]
+        planned_end = db_result[10]
+        if planned_start and hasattr(planned_start, 'strftime'):
+            planned_start = planned_start.strftime('%H:%M')
+        if planned_end and hasattr(planned_end, 'strftime'):
+            planned_end = planned_end.strftime('%H:%M')
+        part = {
+            "part_id": db_result[0],
+            "part_number": db_result[1],
+            "title": db_result[2],
+            "grade": db_result[3],
+            "planned_minutes": db_result[4],
+            "actual_minutes": db_result[5] or 0,
+            "time_slot": db_result[6] or "",
+            "completed": db_result[7],
+            "pages": db_result[8] or 0,
+            "planned_start_time": planned_start or "",
+            "planned_end_time": planned_end or "",
+            "planned_start": planned_start or "",
+            "planned_end": planned_end or "",
+            "is_fixed_time": db_result[11] or False,
+            "delay_minutes": db_result[12] or 0,
+            "reason": db_result[13] or ""
+        }
+        if not any(p.get("part_id") == part_id for p in parts):
+            parts.append(part)
+            plan["parts"] = parts
+            context.user_data["current_plan"] = plan
+    
+    if part.get("completed"):
+        grade_info = GRADE_RULES.get(part.get("grade", 3), GRADE_RULES[3])
+        text = f"✅ <b>{part['title']}</b> (انجام شده)\n\n"
+        text += f"⭐ درجه: {grade_info['name']} {grade_info['emoji']}\n"
+        text += f"⏱ زمان برنامه: {part['planned_minutes']} دقیقه\n"
+        text += f"⏱ زمان واقعی: {part.get('actual_minutes', part['planned_minutes'])} دقیقه\n"
+        if part.get("planned_start") and part.get("planned_end"):
+            text += f"🕒 زمان برنامه: {part['planned_start']} - {part['planned_end']}\n"
+        if part.get("pages", 0) > 0:
+            text += f"📄 صفحات: {part['pages']}\n"
+        if part.get("reason"):
+            text += f"📝 دلیل: {part['reason']}\n"
+        text += "\n✅ این پارت قبلاً تکمیل شده است."
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        return
+    
+    grade_info = GRADE_RULES.get(part.get("grade", 3), GRADE_RULES[3])
+    text = f"📖 <b>{part['title']}</b>\n\n"
+    text += f"⭐ درجه: {grade_info['name']} {grade_info['emoji']}\n"
+    text += f"⏱ زمان: {part['planned_minutes']} دقیقه\n"
+    if part.get("planned_start") and part.get("planned_end"):
+        text += f"🕒 زمان برنامه: {part['planned_start']} - {part['planned_end']}\n"
+    if part.get("time_slot"):
+        text += f"🕒 ساعت برنامه: {part['time_slot']}\n"
+    if part.get("pages", 0) > 0:
+        text += f"📄 صفحات: {part['pages']}\n"
+    if part.get("is_fixed_time"):
+        text += "🔒 زمان ثابت - قابل جابه‌جایی نیست\n"
+    if part.get("reason"):
+        text += f"📝 دلیل: {part['reason']}\n"
+    text += f"✅ وضعیت: در انتظار ⬜\n"
+    
+    context.user_data["active_part"] = part_id
+    
+    is_running = part_id in active_timers
+    elapsed = timer_data.get(part_id, {}).get("elapsed_offset", 0)
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=get_part_detail_buttons(part_id, is_running, elapsed),
+        parse_mode=ParseMode.HTML
+    )
+
+# ==================== مدیریت دکمه‌های پارت ====================
+
+async def handle_part_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text.strip()
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    plan = context.user_data.get("current_plan", {})
+    parts = plan.get("parts", [])
+    is_confirmed = plan.get("confirmed", False)
+    is_edit_mode = context.user_data.get("edit_mode", False)
+    
+    if "[" in text and "]" in text:
+        id_match = re.search(r'\[(\d+)\]', text)
+        if id_match:
+            part_id = int(id_match.group(1))
+            found_part = None
+            for p in parts:
+                if p.get("part_id") == part_id:
+                    found_part = p
+                    break
+            if not found_part:
+                await update.message.reply_text("❌ پارت یافت نشد.")
+                return
+            if is_edit_mode:
+                previous_data = {k: v for k, v in found_part.items()}
+                await move_part_up(update, context, part_id)
+                new_part = next((p for p in parts if p.get("part_id") == part_id), None)
+                if new_part:
+                    save_change_history(user_id, plan.get("session_id"), part_id, "move", previous_data, new_part)
+                return
+            if is_confirmed:
+                await show_part_detail(update, context, part_id)
+                return
+            await move_part_up(update, context, part_id)
+            return
+
+async def move_part_up(update: Update, context: ContextTypes.DEFAULT_TYPE, part_id: int) -> None:
+    plan = context.user_data.get("current_plan", {})
+    parts = plan.get("parts", [])
+    
+    index = next((i for i, p in enumerate(parts) if p["part_id"] == part_id), None)
+    if index is None:
+        await update.message.reply_text("❌ پارت یافت نشد.")
+        return
+    
+    if index > 0:
+        parts[index], parts[index-1] = parts[index-1], parts[index]
+        for i, p in enumerate(parts):
+            p["part_number"] = i + 1
+        
+        current_time = 8 * 60
+        for p in sorted(parts, key=lambda x: x.get("part_number", 0)):
+            duration = p["planned_minutes"]
+            start_h = current_time // 60
+            start_m = current_time % 60
+            end_time = current_time + duration
+            end_h = end_time // 60
+            end_m = end_time % 60
+            p["planned_start_time"] = f"{start_h:02d}:{start_m:02d}"
+            p["planned_end_time"] = f"{end_h:02d}:{end_m:02d}"
+            p["time_slot"] = f"{p['planned_start_time']}-{p['planned_end_time']}"
+            current_time = end_time
+        
+        for p in parts:
+            execute_query(
+                """UPDATE study_parts 
+                   SET part_number = %s, planned_start_time = %s, planned_end_time = %s, time_slot = %s
+                   WHERE part_id = %s""",
+                (p["part_number"], p["planned_start_time"], p["planned_end_time"], p["time_slot"], p["part_id"])
+            )
+        
+        plan["parts"] = parts
+        context.user_data["current_plan"] = plan
+        
+        await update.message.reply_text(f"⬆️ {parts[index]['title']} یک ردیف بالا رفت!")
+        
+        if plan.get("confirmed", False):
+            await show_parts_final(update, context, parts)
+        else:
+            await show_parts_initial(update, context, parts)
+    else:
+        await update.message.reply_text("❌ این پارت در بالاترین ردیف است.")
+
+# ==================== مدیریت دکمه‌های برنامه ====================
+
+async def handle_plan_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text.strip()
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    plan = context.user_data.get("current_plan", {})
+    parts = plan.get("parts", [])
+    
+    if text == "🔙 بازگشت":
+        context.user_data.pop("current_plan", None)
+        context.user_data.pop("active_part", None)
+        context.user_data.pop("edit_mode", None)
+        context.user_data.pop("pending_changes", None)
+        await update.message.reply_text("🔙 بازگشت به صفحه اصلی", reply_markup=get_main_keyboard())
+        return
+    
+    if text == "🔙 برگشت به حالت قبل":
+        await handle_undo(update, context)
+        return
+    
+    if text == "✅ تایید تغییرات":
+        await confirm_changes(update, context)
+        return
+    
+    if text == "❌ لغو تغییرات":
+        context.user_data.pop("pending_changes", None)
+        await update.message.reply_text("❌ تغییرات لغو شد.", reply_markup=get_main_keyboard())
+        return
+    
+    if text == "✅ تایید برنامه":
+        await confirm_plan(update, context)
+        return
+    
+    if text == "✅ اتمام برنامه":
+        await handle_finish_plan(update, context)
+        return
+    
+    if text == "✏️ ویرایش برنامه":
+        await show_edit_menu(update, context)
+        return
+    
+    if text == "✏️ ویرایش دستی":
+        context.user_data["edit_mode"] = True
+        await show_parts_initial(update, context, parts)
+        return
+    
+    if text == "✏️ ویرایش آزاد (چت با AI)":
+        context.user_data["mode"] = "ai_chat"
+        context.user_data["edit_mode"] = True
+        await update.message.reply_text(
+            "💬 **حالت ویرایش آزاد با AI**\n\n"
+            "تغییرات مورد نظر رو به زبان خودت بگو.\n"
+            "مثال: «زمان ریاضی رو به ۱ ساعت افزایش بده»\n\n"
+            "برای خروج، دکمه 🔙 بازگشت به منو رو بزن.",
+            reply_markup=get_ai_chat_keyboard()
+        )
+        return
+    
+    if text == "➕ اضافه کردن فعالیت":
+        await start_add_activity(update, context)
+        return
+    
+    if text == "🔄 بازنشانی":
+        today = get_today_date()
+        if plan.get("session_id"):
+            execute_query("UPDATE study_sessions SET archived = TRUE WHERE session_id = %s", (plan["session_id"],))
+        context.user_data.pop("current_plan", None)
+        await update.message.reply_text("🔄 برنامه بازنشانی شد!", reply_markup=get_main_keyboard())
+        return
+    
+    if text in ["⏱ تایمر", "▶️ ادامه تایمر", "⏹ توقف", "✅ تکمیل", "🗑 حذف پارت"]:
+        active_part = context.user_data.get("active_part")
+        if not active_part:
+            await update.message.reply_text("❌ هیچ پارت فعالی وجود ندارد.\nابتدا روی یک پارت کلیک کن.")
+            return
+        if text == "⏱ تایمر" or text == "▶️ ادامه تایمر":
+            await start_timer_command(update, context, active_part)
+        elif text == "⏹ توقف":
+            await stop_timer_command(update, context, active_part)
+        elif text == "✅ تکمیل":
+            await handle_done_part(update, context, active_part)
+        elif text == "🗑 حذف پارت":
+            await handle_delete_part(update, context, active_part)
+        return
+    
+    if text == "🧠 ساخت با AI":
+        await handle_build_with_ai(update, context)
+        return
+    
+    if text == "✏️ ساخت دستی":
+        context.user_data["build_mode"] = "manual"
+        context.user_data["build_step"] = "times"
+        await update.message.reply_text(
+            "✏️ **ساخت دستی برنامه امروز**\n\n"
+            "مرحله ۱: ساعت‌های مطالعه خود را وارد کنید.\n\n"
+            "📝 هر سطر یک بازه زمانی:\n"
+            "۸-۱۰\n"
+            "۱۰:۳۰-۱۲\n"
+            "۱۶-۱۸\n\n"
+            "⚠️ ساعت شروع و پایان را مشخص کنید.\n"
+            "⚠️ برای پایان، دکمه <b>✅ تایید</b> رو بزن.",
+            reply_markup=ReplyKeyboardMarkup([["✅ تایید"], ["🔙 بازگشت"]], resize_keyboard=True),
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+# ==================== هندلر Undo بهبودیافته ====================
+
+async def handle_undo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """برگشت به حالت قبل - با پشتیبانی از همه نوع تغییرات"""
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    last_change = get_last_change(user_id)
+    if not last_change:
+        await update.message.reply_text("❌ هیچ تغییری برای برگشت وجود ندارد.")
+        return
+    
+    action_type = last_change.get("action_type")
+    session_id = last_change.get("session_id")
+    part_id = last_change.get("part_id")
+    previous_data = last_change.get("previous_data", {})
+    new_data = last_change.get("new_data", {})
+    extra_data = last_change.get("extra_data", {})
+    change_id = last_change.get("id")
+    today = get_today_date()
+    
+    try:
+        if action_type == "delete":
+            if not previous_data:
+                await update.message.reply_text("❌ داده‌های کافی برای برگشت وجود ندارد.")
+                return
+            
+            part_data = {
+                "title": previous_data.get("title", "بدون عنوان"),
+                "grade": previous_data.get("grade", 3),
+                "planned_minutes": previous_data.get("planned_minutes", 45),
+                "time_slot": previous_data.get("time_slot", ""),
+                "planned_start_time": previous_data.get("planned_start_time"),
+                "planned_end_time": previous_data.get("planned_end_time"),
+                "pages": previous_data.get("pages", 0),
+                "is_fixed_time": previous_data.get("is_fixed_time", False),
+                "reason": previous_data.get("reason", "بازیابی شده توسط Undo")
+            }
+            
+            new_part_id = add_part_to_session(session_id, part_data)
+            
+            if new_part_id:
+                execute_query(
+                    "UPDATE study_sessions SET total_parts = total_parts + 1 WHERE session_id = %s",
+                    (session_id,)
+                )
+                revert_change(change_id)
+                plan = get_plan_by_date(user_id, today)
+                if plan:
+                    context.user_data["current_plan"] = plan
+                    await update.message.reply_text(
+                        f"✅ **پارت '{part_data['title']}' بازیابی شد!**\n\n"
+                        f"🕒 زمان: {part_data.get('time_slot', 'نامشخص')}\n"
+                        f"⏱ مدت: {part_data['planned_minutes']} دقیقه",
+                        parse_mode=ParseMode.HTML
+                    )
+                    await show_parts_final(update, context, plan["parts"])
+                    return
+        
+        elif action_type == "add":
+            if not part_id:
+                await update.message.reply_text("❌ اطلاعات پارت برای حذف وجود ندارد.")
+                return
+            
+            check = execute_query(
+                "SELECT completed, title FROM study_parts WHERE part_id = %s",
+                (part_id,),
+                fetch=True
+            )
+            
+            if not check:
+                await update.message.reply_text("❌ پارت قبلاً حذف شده است.")
+                return
+            
+            if check[0]:
+                await update.message.reply_text(f"❌ پارت '{check[1]}' تکمیل شده و قابل حذف نیست.")
+                return
+            
+            title = check[1]
+            execute_query("DELETE FROM study_parts WHERE part_id = %s", (part_id,))
+            execute_query(
+                "UPDATE study_sessions SET total_parts = total_parts - 1 WHERE session_id = %s",
+                (session_id,)
+            )
+            revert_change(change_id)
+            plan = get_plan_by_date(user_id, today)
+            if plan:
+                context.user_data["current_plan"] = plan
+                await update.message.reply_text(
+                    f"✅ **پارت '{title}' حذف شد!** (برگشت اضافه کردن)",
+                    parse_mode=ParseMode.HTML
+                )
+                await show_parts_final(update, context, plan["parts"])
+                return
+        
+        elif action_type == "update":
+            if not part_id or not previous_data:
+                await update.message.reply_text("❌ داده‌های کافی برای برگشت وجود ندارد.")
+                return
+            
+            check = execute_query(
+                "SELECT part_id FROM study_parts WHERE part_id = %s",
+                (part_id,),
+                fetch=True
+            )
+            
+            if not check:
+                await update.message.reply_text("❌ پارت مورد نظر وجود ندارد.")
+                return
+            
+            update_fields = []
+            values = []
+            
+            for key, value in previous_data.items():
+                if key not in ["part_id", "session_id", "completed", "actual_minutes"]:
+                    update_fields.append(f"{key} = %s")
+                    values.append(value)
+            
+            if update_fields:
+                values.append(part_id)
+                query = f"UPDATE study_parts SET {', '.join(update_fields)} WHERE part_id = %s"
+                execute_query(query, tuple(values))
+            
+            revert_change(change_id)
+            plan = get_plan_by_date(user_id, today)
+            if plan:
+                context.user_data["current_plan"] = plan
+                await update.message.reply_text(
+                    "✅ **تغییرات پارت برگشت داده شد!**",
+                    parse_mode=ParseMode.HTML
+                )
+                await show_parts_final(update, context, plan["parts"])
+                return
+        
+        elif action_type == "complete":
+            if not part_id:
+                await update.message.reply_text("❌ اطلاعات پارت وجود ندارد.")
+                return
+            
+            check = execute_query(
+                "SELECT completed, title, session_id FROM study_parts WHERE part_id = %s",
+                (part_id,),
+                fetch=True
+            )
+            
+            if not check:
+                await update.message.reply_text("❌ پارت مورد نظر وجود ندارد.")
+                return
+            
+            completed, title, sess_id = check
+            
+            if not completed:
+                await update.message.reply_text(f"⚠️ پارت '{title}' قبلاً ناتمام است.")
+                return
+            
+            execute_query(
+                """UPDATE study_parts 
+                   SET completed = FALSE, actual_minutes = 0, actual_end_time = NULL,
+                       completed_at = NULL
+                   WHERE part_id = %s""",
+                (part_id,)
+            )
+            
+            execute_query(
+                """UPDATE study_sessions 
+                   SET completed_parts = (
+                       SELECT COUNT(*) FROM study_parts 
+                       WHERE session_id = %s AND completed = TRUE
+                   )
+                   WHERE session_id = %s""",
+                (session_id, session_id)
+            )
+            
+            execute_query(
+                "DELETE FROM activity_log WHERE part_order = (SELECT part_number FROM study_parts WHERE part_id = %s) AND date = %s",
+                (part_id, today)
+            )
+            
+            revert_change(change_id)
+            plan = get_plan_by_date(user_id, today)
+            if plan:
+                context.user_data["current_plan"] = plan
+                await update.message.reply_text(
+                    f"✅ **تکمیل پارت '{title}' برگشت داده شد!**",
+                    parse_mode=ParseMode.HTML
+                )
+                await show_parts_final(update, context, plan["parts"])
+                return
+        
+        elif action_type == "move":
+            if not part_id or not previous_data:
+                await update.message.reply_text("❌ داده‌های کافی برای برگشت وجود ندارد.")
+                return
+            
+            part_number = previous_data.get("part_number")
+            if part_number is not None:
+                execute_query(
+                    "UPDATE study_parts SET part_number = %s WHERE part_id = %s",
+                    (part_number, part_id)
+                )
+            
+            planned_start = previous_data.get("planned_start_time")
+            planned_end = previous_data.get("planned_end_time")
+            time_slot = previous_data.get("time_slot")
+            
+            if planned_start and planned_end:
+                execute_query(
+                    """UPDATE study_parts 
+                       SET planned_start_time = %s, planned_end_time = %s, time_slot = %s
+                       WHERE part_id = %s""",
+                    (planned_start, planned_end, time_slot, part_id)
+                )
+            
+            revert_change(change_id)
+            plan = get_plan_by_date(user_id, today)
+            if plan:
+                context.user_data["current_plan"] = plan
+                await update.message.reply_text(
+                    "✅ **جابه‌جایی پارت برگشت داده شد!**",
+                    parse_mode=ParseMode.HTML
+                )
+                await show_parts_final(update, context, plan["parts"])
+                return
+        
+        elif action_type == "clear":
+            if not previous_data:
+                await update.message.reply_text("❌ داده‌های کافی برای برگشت وجود ندارد.")
+                return
+            
+            parts = extra_data.get("parts", [])
+            if not parts:
+                await update.message.reply_text("❌ اطلاعات پارت‌ها برای بازیابی وجود ندارد.")
+                return
+            
+            restored_count = 0
+            for part in parts:
+                part_data = {
+                    "title": part.get("title", "بدون عنوان"),
+                    "grade": part.get("grade", 3),
+                    "planned_minutes": part.get("planned_minutes", 45),
+                    "time_slot": part.get("time_slot", ""),
+                    "planned_start_time": part.get("planned_start_time"),
+                    "planned_end_time": part.get("planned_end_time"),
+                    "pages": part.get("pages", 0),
+                    "is_fixed_time": part.get("is_fixed_time", False),
+                    "reason": part.get("reason", "بازیابی شده توسط Undo"),
+                    "part_number": part.get("part_number", 0)
+                }
+                
+                new_part_id = add_part_to_session(session_id, part_data)
+                if new_part_id:
+                    restored_count += 1
+            
+            if restored_count > 0:
+                revert_change(change_id)
+                plan = get_plan_by_date(user_id, today)
+                if plan:
+                    context.user_data["current_plan"] = plan
+                    await update.message.reply_text(
+                        f"✅ **{restored_count} پارت بازیابی شد!**",
+                        parse_mode=ParseMode.HTML
+                    )
+                    await show_parts_final(update, context, plan["parts"])
+                    return
+        
+        await update.message.reply_text("❌ **خطا در برگشت تغییرات.**\n\nلطفاً دستی تغییرات را اصلاح کنید.")
+        
+    except Exception as e:
+        logger.error(f"خطا در Undo: {e}")
+        await update.message.reply_text(f"❌ خطا در برگشت تغییرات: {str(e)[:100]}")
+
+async def confirm_changes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    pending = context.user_data.get("pending_changes")
+    if not pending:
+        await update.message.reply_text("❌ هیچ تغییری برای تایید وجود ندارد.")
+        return
+    
+    for change in pending:
+        part_id = change.get("part_id")
+        data = change.get("data", {})
+        for key, value in data.items():
+            if key not in ["part_id", "session_id"]:
+                execute_query(
+                    f"UPDATE study_parts SET {key} = %s WHERE part_id = %s",
+                    (value, part_id)
+                )
+    
+    context.user_data.pop("pending_changes", None)
+    await update.message.reply_text("✅ تغییرات تایید و اعمال شد!")
+    
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    plan = get_plan_by_date(user_id, get_today_date())
+    if plan:
+        context.user_data["current_plan"] = plan
+        await show_parts_final(update, context, plan["parts"])
+
+async def confirm_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    plan = context.user_data.get("current_plan", {})
+    parts = plan.get("parts", [])
+    session_id = plan.get("session_id")
+    
+    if not parts:
+        await update.message.reply_text("❌ برنامه‌ای وجود ندارد.")
+        return
+    
+    if session_id:
+        confirm_session(session_id)
+    
+    plan["confirmed"] = True
+    context.user_data["current_plan"] = plan
+    context.user_data["edit_mode"] = False
+    
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if user_id:
+        level = calculate_plan_level(user_id)
+        update_user_plan_level(user_id, level)
+    
+    level = context.user_data.get("current_plan", {}).get("plan_level", 0)
+    level_name = get_plan_level_name(level)
+    level_emoji = get_plan_level_emoji(level)
+    
+    await update.message.reply_text(
+        f"✅ <b>برنامه تایید شد!</b> {level_emoji} سطح {level_name}",
+        parse_mode=ParseMode.HTML
+    )
+    await show_parts_final(update, context, parts)
+
+async def handle_finish_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    plan = context.user_data.get("current_plan", {})
+    parts = plan.get("parts", [])
+    session_id = plan.get("session_id")
+    
+    if not parts:
+        await update.message.reply_text("❌ برنامه‌ای وجود ندارد.")
+        return
+    
+    completed_parts = [p for p in parts if p.get("completed", False)]
+    incomplete_parts = [p for p in parts if not p.get("completed", False)]
+    total_parts = len(parts)
+    done_count = len(completed_parts)
+    
+    if session_id:
+        finish_session(session_id)
+    
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if user_id:
+        level = calculate_plan_level(user_id)
+        update_user_plan_level(user_id, level)
+    
+    text = f"📅 برنامه امروز به پایان رسید!\n\n"
+    text += f"📊 پیشرفت: {done_count}/{total_parts}\n"
+    text += f"✅ پارت‌های انجام شده: {done_count} مورد\n"
+    text += f"⬜ پارت‌های انجام نشده: {len(incomplete_parts)} مورد\n\n"
+    
+    if incomplete_parts:
+        text += "📋 پارت‌های انجام نشده (در تقویم باقی ماندند):\n"
+        for part in incomplete_parts[:5]:
+            text += f"⬜ {part['title']} ({part.get('planned_minutes', 0)}د)\n"
+    
+    context.user_data.pop("current_plan", None)
+    context.user_data.pop("active_part", None)
+    
+    await update.message.reply_text(text, reply_markup=get_main_keyboard(), parse_mode=ParseMode.HTML)
+
+async def show_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "✏️ <b>ویرایش برنامه</b>\n\n"
+        "نوع ویرایش رو انتخاب کن:\n\n"
+        "📌 <b>ویرایش دستی</b> - نامحدود\n"
+        "   جابه‌جایی و حذف پارت‌ها با تایید\n\n"
+        "📌 <b>ویرایش آزاد (چت با AI)</b> - نامحدود\n"
+        "   تغییرات با دستور متنی و AI",
+        reply_markup=get_edit_menu_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+
+async def handle_delete_part(update: Update, context: ContextTypes.DEFAULT_TYPE, part_id: int = None) -> None:
+    if part_id is None:
+        part_id = context.user_data.get("active_part")
+    if not part_id:
+        await update.message.reply_text("❌ هیچ پارت فعالی وجود ندارد.")
+        return
+    
+    plan = context.user_data.get("current_plan", {})
+    parts = plan.get("parts", [])
+    part = next((p for p in parts if p["part_id"] == part_id), None)
+    if not part:
+        await update.message.reply_text("❌ پارت یافت نشد.")
+        return
+    if part.get("completed"):
+        await update.message.reply_text("❌ پارت انجام شده را نمی‌توان حذف کرد.")
+        return
+    
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    previous_data = {
+        "title": part.get("title"),
+        "grade": part.get("grade"),
+        "planned_minutes": part.get("planned_minutes"),
+        "time_slot": part.get("time_slot"),
+        "planned_start_time": part.get("planned_start_time"),
+        "planned_end_time": part.get("planned_end_time"),
+        "pages": part.get("pages", 0),
+        "is_fixed_time": part.get("is_fixed_time", False),
+        "reason": part.get("reason", ""),
+        "part_number": part.get("part_number", 0)
+    }
+    
+    await update.message.reply_text(
+        f"⚠️ **آیا مطمئنی که می‌خوای {part['title']} رو حذف کنی؟**\n\n"
+        f"این تغییر قابل برگشت است.",
+        reply_markup=get_confirm_delete_keyboard()
+    )
+    context.user_data["pending_delete"] = {
+        "part_id": part_id,
+        "previous_data": previous_data,
+        "part_title": part['title'],
+        "session_id": plan.get("session_id")
+    }
+
+async def handle_confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text.strip()
+    if text == "✅ بله، حذف کن":
+        pending = context.user_data.get("pending_delete")
+        if not pending:
+            await update.message.reply_text("❌ عملیات حذف لغو شد.")
+            return
+        
+        part_id = pending["part_id"]
+        previous_data = pending["previous_data"]
+        part_title = pending["part_title"]
+        session_id = pending.get("session_id")
+        
+        plan = context.user_data.get("current_plan", {})
+        user_id = get_user_id_by_telegram(update.effective_user.id)
+        
+        save_change_history(user_id, session_id, part_id, "delete", previous_data)
+        
+        execute_query("DELETE FROM study_parts WHERE part_id = %s", (part_id,))
+        
+        plan["parts"] = [p for p in plan.get("parts", []) if p["part_id"] != part_id]
+        for i, p in enumerate(plan["parts"]):
+            p["part_number"] = i + 1
+        
+        execute_query(
+            "UPDATE study_sessions SET total_parts = %s WHERE session_id = %s",
+            (len(plan["parts"]), session_id)
+        )
+        
+        context.user_data["current_plan"] = plan
+        context.user_data.pop("pending_delete", None)
+        context.user_data.pop("active_part", None)
+        
+        await update.message.reply_text(f"🗑 <b>{part_title}</b> حذف شد!", parse_mode=ParseMode.HTML)
+        
+        await update.message.reply_text(
+            "🔙 برای برگشت، دکمه <b>🔙 برگشت به حالت قبل</b> رو بزن.",
+            reply_markup=get_part_buttons_final(plan["parts"]),
+            parse_mode=ParseMode.HTML
+        )
+        
+    elif text == "❌ نه، لغو":
+        context.user_data.pop("pending_delete", None)
+        await update.message.reply_text("❌ حذف لغو شد.")
+        plan = context.user_data.get("current_plan", {})
+        if plan.get("parts"):
+            await show_parts_final(update, context, plan["parts"])
+        else:
+            await update.message.reply_text("🔙 بازگشت به منو", reply_markup=get_main_keyboard())
+
+async def handle_done_part(update: Update, context: ContextTypes.DEFAULT_TYPE, part_id: int) -> None:
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    
+    if part_id in active_timers:
+        active_timers[part_id].schedule_removal()
+        del active_timers[part_id]
+    if part_id in timer_data:
+        del timer_data[part_id]
+    
+    check_query = """
+    SELECT completed, title, planned_minutes, actual_minutes, session_id,
+           planned_start_time, planned_end_time, is_fixed_time, part_number
+    FROM study_parts
+    WHERE part_id = %s
+    """
+    check_result = execute_query(check_query, (part_id,), fetch=True)
+    if not check_result:
+        await update.message.reply_text("❌ پارت یافت نشد.")
+        return
+    
+    is_completed, title, planned_minutes, actual_minutes, session_id, planned_start, planned_end, is_fixed, part_number = check_result
+    
+    if is_completed:
+        await update.message.reply_text(f"⚠️ <b>{title}</b> قبلاً انجام شده است.", parse_mode=ParseMode.HTML)
+        return
+    
+    now = datetime.now(IRAN_TZ)
+    actual_minutes_calc = planned_minutes
+    
+    previous_data = {
+        "title": title,
+        "planned_minutes": planned_minutes,
+        "part_number": part_number,
+        "completed": False,
+        "actual_minutes": 0,
+        "planned_start_time": planned_start,
+        "planned_end_time": planned_end,
+        "time_slot": f"{planned_start}-{planned_end}" if planned_start and planned_end else ""
+    }
+    save_change_history(user_id, session_id, part_id, "complete", previous_data)
+    
+    execute_query(
+        """UPDATE study_parts 
+           SET completed = TRUE, 
+               completed_at = %s, 
+               actual_minutes = %s,
+               actual_end_time = %s
+           WHERE part_id = %s""",
+        (now, actual_minutes_calc, now, part_id)
+    )
+    
+    update_part_times_and_shift_remaining(session_id, part_id, now)
+    
+    execute_query(
+        """UPDATE study_sessions 
+           SET completed_parts = (
+               SELECT COUNT(*) FROM study_parts 
+               WHERE session_id = %s AND completed = TRUE
+           )
+           WHERE session_id = %s""",
+        (session_id, session_id)
+    )
+    
+    activity_data = {
+        "user_id": user_id,
+        "date": get_today_date(),
+        "subject": title,
+        "topic": "",
+        "activity_type": "مطالعه",
+        "planned_duration": planned_minutes,
+        "actual_duration": actual_minutes_calc,
+        "status": "done",
+        "score": None,
+        "part_order": part_number
+    }
+    save_activity(activity_data)
+    
+    update_subject_status(user_id, title, activity_data)
+    
+    context.user_data.pop("active_part", None)
+    
+    await update.message.reply_text(
+        f"✅ <b>{title} تکمیل شد!</b>\n\n"
+        f"⏱ زمان واقعی: {actual_minutes_calc} دقیقه\n"
+        f"🎯 موفقیت آمیز بود!\n\n"
+        f"🔙 برای برگشت، دکمه <b>🔙 برگشت به حالت قبل</b> رو بزن.",
+        parse_mode=ParseMode.HTML
+    )
+    
+    plan = context.user_data.get("current_plan", {})
+    parts = plan.get("parts", [])
+    for p in parts:
+        if p["part_id"] == part_id:
+            p["completed"] = True
+            p["actual_minutes"] = actual_minutes_calc
+            break
+    
+    await show_parts_final(update, context, parts, True)
+
+# ==================== تایمر با قابلیت ادامه ====================
+
+async def start_timer_command(update: Update, context: ContextTypes.DEFAULT_TYPE, part_id: int) -> None:
+    chat_id = update.effective_chat.id
+    
+    if part_id in active_timers:
+        await update.message.reply_text("⏱ تایمر در حال اجراست!")
+        return
+    
+    query = "SELECT title, planned_minutes, completed FROM study_parts WHERE part_id = %s"
+    result = execute_query(query, (part_id,), fetch=True)
+    if not result:
+        await update.message.reply_text("❌ پارت یافت نشد.")
+        return
+    
+    title, total_minutes, completed = result
+    if completed:
+        await update.message.reply_text("❌ این پارت قبلاً انجام شده.")
+        return
+    
+    if part_id in timer_data:
+        elapsed_offset = timer_data[part_id].get("elapsed_offset", 0)
+        start_time = datetime.now(IRAN_TZ) - timedelta(seconds=elapsed_offset)
+        await update.message.reply_text(f"▶️ **ادامه تایمر: {title}**\n\n⏳ از {format_time_hours_minutes(elapsed_offset // 60)} ادامه می‌دهیم...")
+    else:
+        elapsed_offset = 0
+        start_time = datetime.now(IRAN_TZ)
+        await update.message.reply_text(
+            f"⏱ **شروع تایمر: {title}**\n\n"
+            f"🎯 هدف: {total_minutes} دقیقه\n"
+            f"⏳ در حال اجرا...",
+            parse_mode=ParseMode.HTML
+        )
+    
+    msg = await update.message.reply_text(
+        f"⏱ **تایمر: {title}**\n\n"
+        f"⏳ در حال اجرا...",
+        parse_mode=ParseMode.HTML
+    )
+    
+    job_data = {
+        "chat_id": chat_id,
+        "part_id": part_id,
+        "start_time": start_time,
+        "timer_message_id": msg.message_id,
+        "total_minutes": total_minutes,
+        "elapsed_offset": elapsed_offset
+    }
+    
+    if context.job_queue:
+        job = context.job_queue.run_repeating(update_timer, interval=10, first=10, data=job_data)
+        active_timers[part_id] = job
+        timer_data[part_id] = {"elapsed_offset": elapsed_offset, "last_update": datetime.now(IRAN_TZ)}
+        
+        await show_part_detail(update, context, part_id)
+
+async def stop_timer_command(update: Update, context: ContextTypes.DEFAULT_TYPE, part_id: int) -> None:
+    if part_id in active_timers:
+        job = active_timers[part_id]
+        job_data = job.data
+        start_time = job_data.get("start_time")
+        elapsed_offset = job_data.get("elapsed_offset", 0)
+        total_minutes = job_data.get("total_minutes", 0)
+        elapsed = elapsed_offset + int((datetime.now(IRAN_TZ) - start_time).total_seconds())
+        
+        timer_data[part_id] = {"elapsed_offset": elapsed, "last_update": datetime.now(IRAN_TZ)}
+        
+        active_timers[part_id].schedule_removal()
+        del active_timers[part_id]
+        
+        remaining = max(0, total_minutes * 60 - elapsed)
+        await update.message.reply_text(
+            f"⏹ **تایمر متوقف شد.**\n\n"
+            f"⏱ زمان سپری شده: {elapsed // 60:02d}:{elapsed % 60:02d}\n"
+            f"⏳ زمان باقی‌مانده: {remaining // 60:02d}:{remaining % 60:02d}\n\n"
+            f"▶️ برای ادامه، دکمه <b>ادامه تایمر</b> رو بزن.",
+            parse_mode=ParseMode.HTML
+        )
+        
+        await show_part_detail(update, context, part_id)
+    else:
+        await update.message.reply_text("❌ تایمر فعالی وجود ندارد.")
+
+# ==================== تقویم ====================
+
+async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    dates = get_recent_dates(user_id, 10)
+    if not dates:
+        await update.message.reply_text(
+            "📭 هیچ برنامه‌ای در ۱۰ روز اخیر نداشتی.\n\n"
+            "📝 برای شروع، دکمه <b>برنامه امروز</b> رو بزن.",
+            reply_markup=get_main_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    context.user_data["calendar_mode"] = True
+    await update.message.reply_text(
+        "📅 <b>۱۰ روز اخیر:</b>\n\n"
+        "تاریخ مورد نظر رو انتخاب کن:",
+        reply_markup=get_calendar_keyboard(dates),
+        parse_mode=ParseMode.HTML
+    )
+
+async def handle_calendar_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text
+    if not text.startswith("📅 "):
+        return
+    
+    shamsi_date = text.replace("📅 ", "").strip()
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    try:
+        parts = shamsi_date.split("/")
+        if len(parts) == 3:
+            year, month, day = map(int, parts)
+            jdate = jdatetime.date(year, month, day)
+            gregorian = jdate.togregorian()
+            date_str = gregorian.strftime("%Y-%m-%d")
+        else:
+            await update.message.reply_text("❌ تاریخ نامعتبر.")
+            return
+    except:
+        await update.message.reply_text("❌ تاریخ نامعتبر.")
+        return
+    
+    plan = get_plan_by_date(user_id, date_str)
+    if not plan or not plan["parts"]:
+        await update.message.reply_text(f"📭 در تاریخ {shamsi_date} برنامه‌ای نداشتی.", reply_markup=get_main_keyboard())
+        return
+    
+    context.user_data["current_plan"] = plan
+    context.user_data["selected_date"] = date_str
+    
+    if plan.get("confirmed", False):
+        await show_parts_final(update, context, plan["parts"], True)
+    else:
+        await show_parts_initial(update, context, plan["parts"])
+
+# ==================== برنامه امروز ====================
+
+async def handle_today_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    today = get_today_date()
+    plan = get_plan_by_date(user_id, today)
+    
+    if plan and plan["parts"]:
+        context.user_data["current_plan"] = plan
+        context.user_data["selected_date"] = today
+        if plan.get("confirmed", False):
+            await show_parts_final(update, context, plan["parts"])
+        else:
+            await show_parts_initial(update, context, plan["parts"])
+        return
+    
+    await update.message.reply_text(
+        "📝 **برنامه‌ای برای امروز وجود ندارد.**\n\n"
+        "چگونه می‌خواهید برنامه امروز را بسازید؟",
+        reply_markup=get_build_plan_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+
+async def handle_build_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    remaining = get_remaining_messages(user_id)
+    if remaining <= 0:
+        await update.message.reply_text(
+            "⛔️ **سقف پیام AI امروزت تموم شده!**\n\n"
+            "برای ساخت برنامه با AI، نیاز به اشتراک داری.\n"
+            "💰 برای خرید اشتراک، از دکمه <b>خرید اشتراک</b> استفاده کن.",
+            reply_markup=get_main_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    user_data = get_user_data(str(update.effective_user.id))
+    if not user_data:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    level = calculate_plan_level(user_id)
+    user_data['plan_level'] = level
+    update_user_plan_level(user_id, level)
+    
+    wait_msg = await update.message.reply_text("🧠 در حال ساخت برنامه با AI...")
+    ai_response = await generate_plan_with_ai(user_id, user_data)
+    await wait_msg.delete()
+    
+    if ai_response and ai_response.get('subjects'):
+        session_id = create_plan_from_ai_response(user_id, user_data, ai_response)
+        if session_id:
+            plan = get_plan_by_date(user_id, get_today_date())
+            if plan:
+                context.user_data["current_plan"] = plan
+                await show_parts_initial(update, context, plan["parts"])
+                return
+    
+    await update.message.reply_text(
+        "❌ خطا در ساخت برنامه با AI.\n"
+        "لطفاً از گزینه <b>ساخت دستی</b> استفاده کن.",
+        reply_markup=get_build_plan_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+
+async def handle_build_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text.strip()
+    
+    if text == "🔙 بازگشت":
+        context.user_data.pop("build_mode", None)
+        context.user_data.pop("build_step", None)
+        context.user_data.pop("build_times", None)
+        context.user_data.pop("build_time_slots", None)
+        context.user_data.pop("build_activities", None)
+        await update.message.reply_text("🔙 بازگشت به منو", reply_markup=get_main_keyboard())
+        return
+    
+    if text == "✅ تایید":
+        build_times = context.user_data.get("build_times", "")
+        if not build_times.strip():
+            await update.message.reply_text(
+                "❌ لطفاً حداقل یک بازه زمانی وارد کن.\n"
+                "مثال: ۸-۱۰"
+            )
+            return
+        
+        time_slots = parse_manual_times(build_times)
+        if not time_slots:
+            await update.message.reply_text(
+                "❌ فرمت زمان‌ها نامعتبر است.\n"
+                "فرمت صحیح: ۸-۱۰ یا ۸:۰۰-۱۰:۰۰"
+            )
+            return
+        
+        context.user_data["build_time_slots"] = time_slots
+        context.user_data["build_step"] = "activities"
+        
+        await update.message.reply_text(
+            f"✅ {len(time_slots)} بازه زمانی ثبت شد.\n\n"
+            "✏️ **مرحله ۲: فعالیت‌های خود را وارد کنید.**\n\n"
+            "📝 هر فعالیت در یک خط:\n"
+            "عنوان فعالیت | مدت (دقیقه) | اولویت\n\n"
+            "مثال:\n"
+            "ریاضی - فصل ۴ | ۴۵ | بالا\n"
+            "فیزیک - حرکت شناسی | ۶۰ | بالا\n"
+            "زیست - گفتار ۱ | ۳۰ | متوسط\n\n"
+            "⚠️ تعداد فعالیت‌ها باید با تعداد بازه‌های زمانی برابر باشد.\n"
+            "⚠️ برای پایان، دکمه <b>✅ تایید</b> رو بزن.",
+            reply_markup=ReplyKeyboardMarkup([["✅ تایید"], ["🔙 بازگشت"]], resize_keyboard=True),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    current_times = context.user_data.get("build_times", "")
+    if current_times:
+        current_times += "\n" + text
+    else:
+        current_times = text
+    context.user_data["build_times"] = current_times
+    
+    await update.message.reply_text(
+        f"✅ زمان ثبت شد: {text}\n\n"
+        f"📋 زمان‌های ثبت‌شده:\n{current_times}\n\n"
+        "برای اتمام، دکمه <b>✅ تایید</b> رو بزن.",
+        parse_mode=ParseMode.HTML
+    )
+
+async def handle_build_manual_activities(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text.strip()
+    
+    if text == "🔙 بازگشت":
+        context.user_data.pop("build_mode", None)
+        context.user_data.pop("build_step", None)
+        context.user_data.pop("build_times", None)
+        context.user_data.pop("build_time_slots", None)
+        context.user_data.pop("build_activities", None)
+        await update.message.reply_text("🔙 بازگشت به منو", reply_markup=get_main_keyboard())
+        return
+    
+    if text == "✅ تایید":
+        build_activities = context.user_data.get("build_activities", "")
+        if not build_activities.strip():
+            await update.message.reply_text(
+                "❌ لطفاً حداقل یک فعالیت وارد کن.\n"
+                "مثال: ریاضی | ۴۵ | بالا"
+            )
+            return
+        
+        activities = parse_manual_activities(build_activities)
+        if not activities:
+            await update.message.reply_text(
+                "❌ فرمت فعالیت‌ها نامعتبر است.\n"
+                "فرمت صحیح: عنوان | مدت | اولویت"
+            )
+            return
+        
+        time_slots = context.user_data.get("build_time_slots", [])
+        
+        if len(activities) != len(time_slots):
+            await update.message.reply_text(
+                f"⚠️ تعداد فعالیت‌ها ({len(activities)}) با تعداد بازه‌های زمانی ({len(time_slots)}) برابر نیست.\n\n"
+                f"📋 بازه‌های زمانی: {len(time_slots)} مورد\n"
+                f"📋 فعالیت‌ها: {len(activities)} مورد\n\n"
+                "لطفاً تعداد را برابر کنید."
+            )
+            return
+        
+        user_id = get_user_id_by_telegram(update.effective_user.id)
+        session_id = create_manual_plan(user_id, time_slots, activities)
+        
+        if session_id:
+            plan = get_plan_by_date(user_id, get_today_date())
+            if plan:
+                context.user_data["current_plan"] = plan
+                context.user_data.pop("build_mode", None)
+                context.user_data.pop("build_step", None)
+                context.user_data.pop("build_times", None)
+                context.user_data.pop("build_time_slots", None)
+                context.user_data.pop("build_activities", None)
+                
+                await update.message.reply_text("✅ **برنامه با موفقیت ساخته شد!**")
+                await show_parts_initial(update, context, plan["parts"])
+                return
+        
+        await update.message.reply_text("❌ خطا در ساخت برنامه. لطفاً دوباره تلاش کن.")
+        return
+    
+    current_activities = context.user_data.get("build_activities", "")
+    if current_activities:
+        current_activities += "\n" + text
+    else:
+        current_activities = text
+    context.user_data["build_activities"] = current_activities
+    
+    await update.message.reply_text(
+        f"✅ فعالیت ثبت شد: {text}\n\n"
+        f"📋 فعالیت‌های ثبت‌شده:\n{current_activities}\n\n"
+        "برای اتمام، دکمه <b>✅ تایید</b> رو بزن.",
+        parse_mode=ParseMode.HTML
+    )
+
+# ==================== اضافه کردن فعالیت (دو مرحله‌ای) ====================
+
+async def start_add_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    plan = context.user_data.get("current_plan", {})
+    parts = plan.get("parts", [])
+    
+    if not parts:
+        await update.message.reply_text(
+            "❌ ابتدا برنامه‌ای ایجاد کن.\n"
+            "از دکمه <b>برنامه امروز</b> استفاده کن.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    text = "📝 **اضافه کردن فعالیت جدید**\n\n"
+    text += "مرحله ۱: بازه زمانی را مشخص کنید.\n\n"
+    
+    keyboard = []
+    for i, part in enumerate(parts):
+        if not part.get("completed"):
+            start = part.get("planned_start_time") or part.get("planned_start") or ""
+            end = part.get("planned_end_time") or part.get("planned_end") or ""
+            if start and end:
+                text += f"{i+1}. ⬜ {start}-{end} (خالی)\n"
+                keyboard.append([f"⏰ بازه {i+1}"])
+    
+    if not keyboard:
+        await update.message.reply_text(
+            "❌ همه بازه‌ها پر هستند.\n"
+            "برای اضافه کردن، ابتدا یک پارت را تکمیل کن."
+        )
+        return
+    
+    keyboard.append(["✏️ بازه دلخواه", "🔙 بازگشت"])
+    context.user_data["add_activity_step"] = "select_time"
     
     await update.message.reply_text(
         text,
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.HTML
     )
 
-# -----------------------------------------------------------
-# 11. هندلر خرید کوپن
-# -----------------------------------------------------------
-
-async def handle_coupon_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پردازش خرید کوپن"""
-    user_id = update.effective_user.id
+async def handle_add_activity_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text.strip()
     
-    # دریافت اطلاعات کارت ادمین
-    card_info = get_admin_card_info()
+    if text == "🔙 بازگشت":
+        context.user_data.pop("add_activity_step", None)
+        context.user_data.pop("add_activity_time_slot", None)
+        context.user_data.pop("add_activity_part_id", None)
+        plan = context.user_data.get("current_plan", {})
+        if plan.get("parts"):
+            await show_parts_final(update, context, plan["parts"])
+        else:
+            await update.message.reply_text("🔙 بازگشت به منو", reply_markup=get_main_keyboard())
+        return
     
-    text = f"""
-💳 <b>خرید کوپن</b>
+    if text == "✏️ بازه دلخواه":
+        await update.message.reply_text(
+            "✏️ لطفاً بازه زمانی مورد نظر رو وارد کن:\n"
+            "مثال: ۱۴-۱۶ یا ۱۴:۰۰-۱۶:۰۰"
+        )
+        context.user_data["add_activity_step"] = "custom_time"
+        return
+    
+    if text.startswith("⏰ بازه "):
+        try:
+            index = int(text.replace("⏰ بازه ", "")) - 1
+            plan = context.user_data.get("current_plan", {})
+            parts = plan.get("parts", [])
+            
+            found = None
+            count = 0
+            for part in parts:
+                if not part.get("completed"):
+                    if count == index:
+                        found = part
+                        break
+                    count += 1
+            
+            if found:
+                start = found.get("planned_start_time") or found.get("planned_start") or ""
+                end = found.get("planned_end_time") or found.get("planned_end") or ""
+                context.user_data["add_activity_time_slot"] = f"{start}-{end}"
+                context.user_data["add_activity_part_id"] = found.get("part_id")
+                
+                await update.message.reply_text(
+                    f"✅ بازه {start}-{end} انتخاب شد.\n\n"
+                    "✏️ **مرحله ۲: اطلاعات فعالیت را وارد کنید.**\n\n"
+                    "📝 عنوان فعالیت | مدت (دقیقه) | اولویت\n\n"
+                    "مثال:\n"
+                    "شیمی - فصل ۲ | ۴۵ | بالا\n\n"
+                    "⚠️ برای تایید، دکمه <b>✅ تایید</b> رو بزن.",
+                    reply_markup=ReplyKeyboardMarkup([["✅ تایید"], ["🔙 بازگشت"]], resize_keyboard=True),
+                    parse_mode=ParseMode.HTML
+                )
+                context.user_data["add_activity_step"] = "enter_activity"
+            else:
+                await update.message.reply_text("❌ بازه مورد نظر یافت نشد.")
+        except:
+            await update.message.reply_text("❌ خطا در انتخاب بازه.")
+        return
 
-💰 <b>مبلغ:</b> ۴۰,۰۰۰ تومان
+async def handle_add_activity_custom_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text.strip()
+    
+    if text == "🔙 بازگشت":
+        context.user_data.pop("add_activity_step", None)
+        plan = context.user_data.get("current_plan", {})
+        if plan.get("parts"):
+            await show_parts_final(update, context, plan["parts"])
+        else:
+            await update.message.reply_text("🔙 بازگشت به منو", reply_markup=get_main_keyboard())
+        return
+    
+    start, end = parse_time_slot(text)
+    if not start or not end:
+        await update.message.reply_text(
+            "❌ فرمت نامعتبر.\n"
+            "فرمت صحیح: ۱۴-۱۶ یا ۱۴:۰۰-۱۶:۰۰"
+        )
+        return
+    
+    context.user_data["add_activity_time_slot"] = f"{start}-{end}"
+    context.user_data["add_activity_part_id"] = None
+    
+    await update.message.reply_text(
+        f"✅ بازه {start}-{end} ثبت شد.\n\n"
+        "✏️ **مرحله ۲: اطلاعات فعالیت را وارد کنید.**\n\n"
+        "📝 عنوان فعالیت | مدت (دقیقه) | اولویت\n\n"
+        "مثال:\n"
+        "شیمی - فصل ۲ | ۴۵ | بالا\n\n"
+        "⚠️ برای تایید، دکمه <b>✅ تایید</b> رو بزن.",
+        reply_markup=ReplyKeyboardMarkup([["✅ تایید"], ["🔙 بازگشت"]], resize_keyboard=True),
+        parse_mode=ParseMode.HTML
+    )
+    context.user_data["add_activity_step"] = "enter_activity"
 
-🏦 <b>لطفا مبلغ را به شماره کارت زیر واریز کنید:</b>
-<code>{card_info['card_number']}</code>
-به نام: {escape_html_for_telegram(card_info['card_owner'])}
+async def handle_add_activity_enter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text.strip()
+    
+    if text == "🔙 بازگشت":
+        context.user_data.pop("add_activity_step", None)
+        context.user_data.pop("add_activity_time_slot", None)
+        context.user_data.pop("add_activity_part_id", None)
+        context.user_data.pop("add_activity_text", None)
+        plan = context.user_data.get("current_plan", {})
+        if plan.get("parts"):
+            await show_parts_final(update, context, plan["parts"])
+        else:
+            await update.message.reply_text("🔙 بازگشت به منو", reply_markup=get_main_keyboard())
+        return
+    
+    if text == "✅ تایید":
+        activity_text = context.user_data.get("add_activity_text", "")
+        if not activity_text.strip():
+            await update.message.reply_text("❌ لطفاً فعالیت را وارد کن.")
+            return
+        
+        activities = parse_manual_activities(activity_text)
+        if not activities:
+            await update.message.reply_text(
+                "❌ فرمت فعالیت نامعتبر است.\n"
+                "فرمت صحیح: عنوان | مدت | اولویت"
+            )
+            return
+        
+        activity = activities[0]
+        
+        time_slot = context.user_data.get("add_activity_time_slot", "")
+        start, end = parse_time_slot(time_slot)
+        if not start or not end:
+            await update.message.reply_text("❌ خطا در بازه زمانی.")
+            return
+        
+        part_id = context.user_data.get("add_activity_part_id")
+        plan = context.user_data.get("current_plan", {})
+        session_id = plan.get("session_id")
+        user_id = get_user_id_by_telegram(update.effective_user.id)
+        
+        if part_id:
+            execute_query(
+                """UPDATE study_parts 
+                   SET title = %s, grade = %s, planned_minutes = %s,
+                       planned_start_time = %s, planned_end_time = %s,
+                       time_slot = %s, reason = %s
+                   WHERE part_id = %s""",
+                (
+                    activity['title'],
+                    activity.get('grade', 3),
+                    activity.get('duration', 45),
+                    start, end,
+                    time_slot,
+                    f"اولویت: {activity.get('priority', 'متوسط')}",
+                    part_id
+                )
+            )
+        else:
+            part_data = {
+                "title": activity['title'],
+                "grade": activity.get('grade', 3),
+                "planned_minutes": activity.get('duration', 45),
+                "time_slot": time_slot,
+                "planned_start_time": start,
+                "planned_end_time": end,
+                "is_fixed_time": True,
+                "reason": f"اولویت: {activity.get('priority', 'متوسط')}",
+                "pages": 0
+            }
+            new_part_id = add_part_to_session(session_id, part_data)
+            if new_part_id:
+                save_change_history(user_id, session_id, new_part_id, "add", part_data)
+        
+        plan = get_plan_by_date(user_id, get_today_date())
+        if plan:
+            context.user_data["current_plan"] = plan
+            context.user_data.pop("add_activity_step", None)
+            context.user_data.pop("add_activity_time_slot", None)
+            context.user_data.pop("add_activity_part_id", None)
+            context.user_data.pop("add_activity_text", None)
+            
+            await update.message.reply_text("✅ **فعالیت جدید اضافه شد!**")
+            await show_parts_final(update, context, plan["parts"])
+        return
+    
+    context.user_data["add_activity_text"] = text
+    await update.message.reply_text(
+        f"✅ فعالیت ثبت شد: {text}\n\n"
+        "برای تایید، دکمه <b>✅ تایید</b> رو بزن.",
+        parse_mode=ParseMode.HTML
+    )
 
-📸 <b>پس از واریز، عکس فیش پرداختی را ارسال کنید.</b>
+# ==================== چت با AI با سیستم تایید ====================
 
-⚠️ <b>توجه:</b>
-• پس از تأیید ادمین، ۱ کوپن عمومی به حساب شما اضافه می‌شود
-• این کوپن را می‌توانید برای هر خدمتی استفاده کنید
-• کوپن‌ها تاریخ انقضا ندارند
+async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    if not get_user_quota(user_id):
+        init_user_quota(user_id)
+    
+    remaining = get_remaining_messages(user_id)
+    
+    if remaining <= 0:
+        await update.message.reply_text(
+            "⛔️ **سقف پیام رایگان امروزت تموم شده!**\n\n"
+            "📊 پیام‌های باقی‌مانده: ۰\n"
+            "💡 برای ادامه چت با AI، اشتراک تهیه کن.\n\n"
+            "💰 هزینه اشتراک یک ماهه: ۵۰۰,۰۰۰ تومان\n"
+            "📱 شماره کارت: **۶۲۱۹۸۶۱۸۳۷۵۶۹۶۸۹**\n"
+            "👤 به نام: **مصطفی فرخندئی**\n\n"
+            "📸 بعد از واریز، عکس رسید رو بفرست تا اشتراکت فعال بشه.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    context.user_data["mode"] = "ai_chat"
+    
+    user_data = get_user_data(str(update.effective_user.id))
+    context_summary = ""
+    if user_data:
+        weak = ", ".join(user_data.get("weak_subjects", [])) or "ندارد"
+        context_summary = f"هدف کاربر: {user_data.get('goal', 'نامشخص')} | درس ضعیف: {weak}"
+    
+    context.user_data["ai_context_summary"] = context_summary
+    
+    await update.message.reply_text(
+        f"💬 **چت با دستیار هوشمند مطالعه**\n\n"
+        f"📚 هر سوالی درباره درس و برنامه‌ریزی داری بپرس.\n"
+        f"🔄 برای شروع مکالمه جدید از دکمه استفاده کن.\n"
+        f"🔙 برای خروج به منو برگرد.\n\n"
+        f"📊 **پیام‌های باقی‌مانده امروز**: {remaining}\n"
+        f"📌 {context_summary}",
+        reply_markup=get_ai_chat_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
 
-🔙 بازگشت
+async def handle_ai_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        context.user_data["mode"] = None
+        return
+    
+    text = update.message.text.strip()
+    
+    if text == "🔙 بازگشت به منو":
+        context.user_data["mode"] = None
+        context.user_data.pop("ai_context_summary", None)
+        context.user_data.pop("edit_mode", None)
+        await update.message.reply_text("🔙 برگشتی به منو 👇", reply_markup=get_main_keyboard())
+        return
+    
+    if text == "🔄 مکالمه جدید":
+        clear_chat_history(user_id)
+        await update.message.reply_text(
+            "🔄 مکالمه جدید شروع شد 🌱\n"
+            "حالا سوالت رو بپرس.",
+            reply_markup=get_ai_chat_keyboard()
+        )
+        return
+    
+    if text == "📊 مصرف امروز":
+        remaining = get_remaining_messages(user_id)
+        quota = get_user_quota(user_id)
+        plan_type = quota.get("plan_type", "trial") if quota else "trial"
+        plan_names = {"trial": "آزمایشی", "basic": "پایه", "premium": "پیشرفته"}
+        await update.message.reply_text(
+            f"📊 **مصرف امروز**\n\n"
+            f"📌 نوع اشتراک: {plan_names.get(plan_type, 'آزمایشی')}\n"
+            f"💬 پیام‌های باقی‌مانده: {remaining}\n"
+            f"📅 تاریخ: {get_today_shamsi()}",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    if len(text) > 1000:
+        await update.message.reply_text("⚠️ لطفاً پیام کوتاه‌تری بفرست (حداکثر ۱۰۰۰ کاراکتر).")
+        return
+    
+    remaining = get_remaining_messages(user_id)
+    if remaining <= 0:
+        await update.message.reply_text(
+            "⛔️ سقف پیام امروزت تموم شده!\n"
+            "برای ادامه، اشتراک تهیه کن یا فردا دوباره امتحان کن."
+        )
+        context.user_data["mode"] = None
+        await update.message.reply_text("🔙 برگشتی به منو", reply_markup=get_main_keyboard())
+        return
+    
+    history = get_chat_history(user_id, limit=10)
+    
+    messages = [{"role": "system", "content": AI_CHAT_SYSTEM_PROMPT}]
+    
+    context_summary = context.user_data.get("ai_context_summary", "")
+    if context_summary:
+        messages[0]["content"] += f"\n\nاطلاعات کاربر: {context_summary}"
+    
+    messages += history
+    messages.append({"role": "user", "content": text})
+    
+    await context.bot.send_chat_action(update.effective_chat.id, "typing")
+    
+    try:
+        completion = await client.chat.completions.create(
+            model=AI_MODEL,
+            messages=messages,
+            max_tokens=600,
+            temperature=0.6
+        )
+        
+        reply = completion.choices[0].message.content
+        
+        save_chat_message(user_id, "user", text)
+        save_chat_message(user_id, "assistant", reply)
+        
+        increment_quota(user_id)
+        
+        remaining_after = get_remaining_messages(user_id)
+        
+        # ============================================
+        # پردازش تغییرات برنامه با تایید کاربر
+        # ============================================
+        change_keywords = ["برنامه", "پارت", "تغییر", "حذف", "اضافه", "زمان", "مدت", "درس", "ببر", "بذار", "کن"]
+        if any(keyword in text for keyword in change_keywords):
+            if any(keyword in reply for keyword in ["اضافه", "حذف", "تغییر", "شد", "می‌شود"]):
+                await process_ai_plan_change(update, context, text, reply)
+        
+        await update.message.reply_text(
+            f"{reply}\n\n"
+            f"📊 {remaining_after} پیام امروز باقی مونده",
+            parse_mode=ParseMode.HTML
+        )
+        
+    except Exception as e:
+        logger.error(f"خطا در چت AI: {e}")
+        await update.message.reply_text(
+            "⚠️ مشکلی در ارتباط با AI پیش اومد.\n"
+            "لطفاً چند لحظه بعد دوباره امتحان کن."
+        )
+
+# ==================== پردازش تغییرات برنامه با AI و تایید ====================
+
+async def process_ai_plan_change(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str, ai_reply: str) -> None:
+    """پردازش تغییرات برنامه از طریق چت AI - با نمایش تایید قبل از اعمال"""
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        return
+    
+    today = get_today_date()
+    plan = get_plan_by_date(user_id, today)
+    if not plan:
+        await update.message.reply_text("❌ برنامه‌ای برای امروز وجود ندارد. ابتدا یک برنامه بسازید.")
+        return
+    
+    interpretation = await interpret_plan_change_request(user_text, plan)
+    
+    if not interpretation or interpretation.get("action") == "unknown":
+        return
+    
+    action = interpretation.get("action", "unknown")
+    target = interpretation.get("target", {})
+    reason = interpretation.get("reason", "")
+    
+    parts = plan.get("parts", [])
+    session_id = plan.get("session_id")
+    
+    pending_change = {
+        "action": action,
+        "target": target,
+        "reason": reason,
+        "session_id": session_id,
+        "user_id": user_id,
+        "parts": parts.copy(),
+        "timestamp": datetime.now(IRAN_TZ).isoformat()
+    }
+    
+    context.user_data["pending_change"] = pending_change
+    
+    if action == "add":
+        title = target.get("title", "مطالعه")
+        duration = target.get("duration", 45)
+        start_time = target.get("start_time")
+        end_time = target.get("end_time")
+        grade = target.get("grade", 3)
+        topic = target.get("topic", "")
+        
+        if not start_time or not end_time:
+            used_slots = []
+            for p in parts:
+                if p.get("planned_start_time") and p.get("planned_end_time"):
+                    used_slots.append((p["planned_start_time"], p["planned_end_time"]))
+            
+            available_slot = None
+            for hour in range(8, 21):
+                start = f"{hour:02d}:00"
+                end = f"{(hour + 1):02d}:00"
+                conflict = False
+                for used_start, used_end in used_slots:
+                    if start < used_end and end > used_start:
+                        conflict = True
+                        break
+                if not conflict:
+                    available_slot = (start, end)
+                    break
+            
+            if available_slot:
+                start_time, end_time = available_slot
+                pending_change["target"]["start_time"] = start_time
+                pending_change["target"]["end_time"] = end_time
+                context.user_data["pending_change"] = pending_change
+        
+        grade_emoji = GRADE_RULES.get(grade, GRADE_RULES[3])["emoji"]
+        grade_name = GRADE_RULES.get(grade, GRADE_RULES[3])["name"]
+        
+        text_msg = f"📋 **تغییر پیشنهادی: اضافه کردن پارت جدید**\n\n"
+        text_msg += f"📚 درس: {title}\n"
+        text_msg += f"⭐ درجه: {grade_name} {grade_emoji}\n"
+        text_msg += f"⏱ مدت: {duration} دقیقه\n"
+        text_msg += f"🕒 زمان: {start_time} - {end_time}\n"
+        if topic:
+            text_msg += f"📝 مبحث: {topic}\n"
+        if reason:
+            text_msg += f"💡 دلیل: {reason}\n"
+        text_msg += "\nآیا این تغییر را تایید می‌کنید؟"
+        
+        await update.message.reply_text(
+            text_msg,
+            reply_markup=get_confirm_change_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    elif action == "delete":
+        title = target.get("title", "")
+        current_title = target.get("current_title", title)
+        
+        if not current_title:
+            await update.message.reply_text("❌ لطفاً نام درسی که می‌خواهید حذف کنید مشخص کنید.")
+            context.user_data.pop("pending_change", None)
+            return
+        
+        target_part = None
+        for p in parts:
+            if p.get("title") == current_title:
+                target_part = p
+                break
+        
+        if not target_part:
+            await update.message.reply_text(f"❌ پارت '{current_title}' در برنامه امروز یافت نشد.")
+            context.user_data.pop("pending_change", None)
+            return
+        
+        if target_part.get("completed"):
+            await update.message.reply_text(f"❌ پارت '{current_title}' قبلاً تکمیل شده و قابل حذف نیست.")
+            context.user_data.pop("pending_change", None)
+            return
+        
+        pending_change["target_part"] = target_part
+        context.user_data["pending_change"] = pending_change
+        
+        grade_emoji = GRADE_RULES.get(target_part.get("grade", 3), GRADE_RULES[3])["emoji"]
+        
+        text_msg = f"⚠️ **تغییر پیشنهادی: حذف پارت**\n\n"
+        text_msg += f"📚 درس: {current_title}\n"
+        text_msg += f"⭐ درجه: {grade_emoji}\n"
+        text_msg += f"⏱ مدت: {target_part.get('planned_minutes', 0)} دقیقه\n"
+        text_msg += f"🕒 زمان: {target_part.get('time_slot', 'نامشخص')}\n"
+        if reason:
+            text_msg += f"💡 دلیل: {reason}\n"
+        text_msg += "\n⚠️ **آیا از حذف این پارت مطمئن هستید؟**"
+        
+        await update.message.reply_text(
+            text_msg,
+            reply_markup=get_confirm_delete_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    elif action == "update":
+        current_title = target.get("current_title", "")
+        if not current_title:
+            await update.message.reply_text("❌ لطفاً نام درسی که می‌خواهید تغییر دهید مشخص کنید.")
+            context.user_data.pop("pending_change", None)
+            return
+        
+        target_part = None
+        for p in parts:
+            if p.get("title") == current_title:
+                target_part = p
+                break
+        
+        if not target_part:
+            await update.message.reply_text(f"❌ پارت '{current_title}' در برنامه امروز یافت نشد.")
+            context.user_data.pop("pending_change", None)
+            return
+        
+        updates = {}
+        new_title = target.get("title", current_title)
+        if new_title != current_title:
+            updates["عنوان"] = f"{current_title} → {new_title}"
+        
+        new_duration = target.get("duration")
+        if new_duration:
+            updates["مدت"] = f"{target_part.get('planned_minutes', 0)} → {new_duration} دقیقه"
+        
+        new_start = target.get("start_time")
+        new_end = target.get("end_time")
+        if new_start and new_end:
+            updates["زمان"] = f"{target_part.get('time_slot', 'نامشخص')} → {new_start}-{new_end}"
+        
+        new_grade = target.get("grade")
+        if new_grade:
+            old_grade = GRADE_RULES.get(target_part.get("grade", 3), GRADE_RULES[3])["name"]
+            new_grade_name = GRADE_RULES.get(new_grade, GRADE_RULES[3])["name"]
+            updates["درجه"] = f"{old_grade} → {new_grade_name}"
+        
+        if not updates:
+            await update.message.reply_text("❌ هیچ تغییری برای اعمال مشخص نشد.")
+            context.user_data.pop("pending_change", None)
+            return
+        
+        pending_change["target_part"] = target_part
+        pending_change["updates"] = updates
+        context.user_data["pending_change"] = pending_change
+        
+        text_msg = f"📝 **تغییر پیشنهادی: به‌روزرسانی پارت**\n\n"
+        text_msg += f"📚 درس: {current_title}\n\n"
+        text_msg += "📋 **تغییرات:**\n"
+        for key, value in updates.items():
+            text_msg += f"• {key}: {value}\n"
+        if reason:
+            text_msg += f"\n💡 دلیل: {reason}\n"
+        text_msg += "\nآیا این تغییرات را تایید می‌کنید؟"
+        
+        await update.message.reply_text(
+            text_msg,
+            reply_markup=get_confirm_change_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    elif action == "clear":
+        text_msg = f"⚠️ **تغییر پیشنهادی: پاک کردن همه پارت‌ها**\n\n"
+        text_msg += f"📊 تعداد پارت‌های فعلی: {len(parts)}\n"
+        if reason:
+            text_msg += f"💡 دلیل: {reason}\n"
+        text_msg += "\n⚠️ **آیا از پاک کردن همه پارت‌ها مطمئن هستید؟**\n"
+        text_msg += "این عمل غیرقابل برگشت است!"
+        
+        await update.message.reply_text(
+            text_msg,
+            reply_markup=get_confirm_clear_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    else:
+        context.user_data.pop("pending_change", None)
+
+async def apply_pending_change(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """اعمال تغییر تاییدشده توسط کاربر"""
+    pending = context.user_data.get("pending_change")
+    if not pending:
+        await update.message.reply_text("❌ هیچ تغییر در انتظار تاییدی وجود ندارد.")
+        return
+    
+    action = pending.get("action")
+    target = pending.get("target", {})
+    session_id = pending.get("session_id")
+    user_id = pending.get("user_id")
+    reason = pending.get("reason", "")
+    today = get_today_date()
+    
+    try:
+        if action == "add":
+            title = target.get("title", "مطالعه")
+            duration = target.get("duration", 45)
+            start_time = target.get("start_time")
+            end_time = target.get("end_time")
+            grade = target.get("grade", 3)
+            topic = target.get("topic", "")
+            
+            if not start_time or not end_time:
+                plan = get_plan_by_date(user_id, today)
+                parts = plan.get("parts", []) if plan else []
+                
+                used_slots = []
+                for p in parts:
+                    if p.get("planned_start_time") and p.get("planned_end_time"):
+                        used_slots.append((p["planned_start_time"], p["planned_end_time"]))
+                
+                available_slot = None
+                for hour in range(8, 21):
+                    start = f"{hour:02d}:00"
+                    end = f"{(hour + 1):02d}:00"
+                    conflict = False
+                    for used_start, used_end in used_slots:
+                        if start < used_end and end > used_start:
+                            conflict = True
+                            break
+                    if not conflict:
+                        available_slot = (start, end)
+                        break
+                
+                if available_slot:
+                    start_time, end_time = available_slot
+                else:
+                    await update.message.reply_text("❌ هیچ بازه زمانی خالی برای اضافه کردن پارت جدید وجود ندارد.")
+                    context.user_data.pop("pending_change", None)
+                    return
+            
+            part_data = {
+                "title": title,
+                "grade": grade,
+                "planned_minutes": duration,
+                "time_slot": f"{start_time}-{end_time}",
+                "planned_start_time": start_time,
+                "planned_end_time": end_time,
+                "is_fixed_time": True,
+                "reason": f"اضافه شده توسط AI - {reason}" if reason else "اضافه شده توسط AI",
+                "pages": 0
+            }
+            
+            new_part_id = add_part_to_session(session_id, part_data)
+            
+            if new_part_id:
+                save_change_history(user_id, session_id, new_part_id, "add", part_data)
+                context.user_data.pop("pending_change", None)
+                updated_plan = get_plan_by_date(user_id, today)
+                if updated_plan:
+                    context.user_data["current_plan"] = updated_plan
+                    
+                    await update.message.reply_text(
+                        f"✅ **پارت جدید با موفقیت اضافه شد!**\n\n"
+                        f"📚 درس: {title}\n"
+                        f"⏱ مدت: {duration} دقیقه\n"
+                        f"🕒 زمان: {start_time} - {end_time}\n\n"
+                        f"📋 برنامه به‌روز شد. برای مشاهده، دکمه <b>📝 برنامه امروز</b> رو بزن.",
+                        reply_markup=get_main_keyboard(),
+                        parse_mode=ParseMode.HTML
+                    )
+                    return
+        
+        elif action == "delete":
+            target_part = pending.get("target_part")
+            if not target_part:
+                await update.message.reply_text("❌ اطلاعات پارت برای حذف یافت نشد.")
+                context.user_data.pop("pending_change", None)
+                return
+            
+            part_id = target_part.get("part_id")
+            title = target_part.get("title")
+            
+            previous_data = {k: v for k, v in target_part.items() if k not in ["part_id", "session_id"]}
+            save_change_history(user_id, session_id, part_id, "delete", previous_data)
+            
+            execute_query("DELETE FROM study_parts WHERE part_id = %s", (part_id,))
+            execute_query(
+                "UPDATE study_sessions SET total_parts = total_parts - 1 WHERE session_id = %s",
+                (session_id,)
+            )
+            
+            context.user_data.pop("pending_change", None)
+            updated_plan = get_plan_by_date(user_id, today)
+            if updated_plan:
+                context.user_data["current_plan"] = updated_plan
+                
+                await update.message.reply_text(
+                    f"✅ **پارت '{title}' با موفقیت حذف شد!**\n\n"
+                    f"🔙 برای برگشت، از دکمه <b>🔙 برگشت به حالت قبل</b> استفاده کن.\n"
+                    f"📋 برنامه به‌روز شد. برای مشاهده، دکمه <b>📝 برنامه امروز</b> رو بزن.",
+                    reply_markup=get_main_keyboard(),
+                    parse_mode=ParseMode.HTML
+                )
+                return
+        
+        elif action == "update":
+            target_part = pending.get("target_part")
+            updates = pending.get("updates", {})
+            if not target_part:
+                await update.message.reply_text("❌ اطلاعات پارت برای به‌روزرسانی یافت نشد.")
+                context.user_data.pop("pending_change", None)
+                return
+            
+            part_id = target_part.get("part_id")
+            current_title = target_part.get("title")
+            
+            previous_data = {k: v for k, v in target_part.items() if k not in ["part_id", "session_id"]}
+            
+            update_fields = {}
+            if target.get("title") and target.get("title") != current_title:
+                update_fields["title"] = target.get("title")
+            if target.get("duration"):
+                update_fields["planned_minutes"] = target.get("duration")
+            if target.get("start_time") and target.get("end_time"):
+                update_fields["planned_start_time"] = target.get("start_time")
+                update_fields["planned_end_time"] = target.get("end_time")
+                update_fields["time_slot"] = f"{target.get('start_time')}-{target.get('end_time')}"
+                update_fields["is_fixed_time"] = True
+            if target.get("grade"):
+                update_fields["grade"] = target.get("grade")
+            
+            if update_fields:
+                set_clause = ", ".join([f"{k} = %s" for k in update_fields.keys()])
+                values = list(update_fields.values()) + [part_id]
+                execute_query(
+                    f"UPDATE study_parts SET {set_clause} WHERE part_id = %s",
+                    tuple(values)
+                )
+                
+                save_change_history(user_id, session_id, part_id, "update", previous_data, update_fields)
+            
+            context.user_data.pop("pending_change", None)
+            updated_plan = get_plan_by_date(user_id, today)
+            if updated_plan:
+                context.user_data["current_plan"] = updated_plan
+                
+                change_text = "\n".join([f"• {key}: {value}" for key, value in updates.items()])
+                await update.message.reply_text(
+                    f"✅ **پارت '{current_title}' با موفقیت تغییر کرد!**\n\n"
+                    f"📝 تغییرات اعمال‌شده:\n{change_text}\n\n"
+                    f"🔙 برای برگشت، از دکمه <b>🔙 برگشت به حالت قبل</b> استفاده کن.\n"
+                    f"📋 برنامه به‌روز شد. برای مشاهده، دکمه <b>📝 برنامه امروز</b> رو بزن.",
+                    reply_markup=get_main_keyboard(),
+                    parse_mode=ParseMode.HTML
+                )
+                return
+        
+        elif action == "clear":
+            parts_data = []
+            for p in pending.get("parts", []):
+                parts_data.append({
+                    "title": p.get("title"),
+                    "grade": p.get("grade"),
+                    "planned_minutes": p.get("planned_minutes"),
+                    "time_slot": p.get("time_slot"),
+                    "planned_start_time": p.get("planned_start_time"),
+                    "planned_end_time": p.get("planned_end_time"),
+                    "pages": p.get("pages", 0),
+                    "is_fixed_time": p.get("is_fixed_time", False),
+                    "reason": p.get("reason", ""),
+                    "part_number": p.get("part_number", 0)
+                })
+            
+            save_change_history(user_id, session_id, None, "clear", {"count": len(parts_data)}, {}, {"parts": parts_data})
+            
+            execute_query("DELETE FROM study_parts WHERE session_id = %s", (session_id,))
+            execute_query(
+                "UPDATE study_sessions SET total_parts = 0, completed_parts = 0 WHERE session_id = %s",
+                (session_id,)
+            )
+            
+            context.user_data.pop("pending_change", None)
+            updated_plan = get_plan_by_date(user_id, today)
+            if updated_plan:
+                context.user_data["current_plan"] = updated_plan
+            
+            await update.message.reply_text(
+                "🗑 **همه پارت‌ها پاک شدند!**\n\n"
+                "برای ساخت برنامه جدید، دکمه <b>📝 برنامه امروز</b> رو بزن.\n"
+                "🔙 برای برگشت، دکمه <b>🔙 برگشت به حالت قبل</b> رو بزن.",
+                reply_markup=get_main_keyboard(),
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        await update.message.reply_text("❌ خطا در اعمال تغییرات.")
+        context.user_data.pop("pending_change", None)
+        
+    except Exception as e:
+        logger.error(f"خطا در apply_pending_change: {e}")
+        await update.message.reply_text(f"❌ خطا در اعمال تغییرات: {str(e)[:100]}")
+        context.user_data.pop("pending_change", None)
+
+async def reject_pending_change(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """رد تغییر پیشنهادی توسط کاربر"""
+    pending = context.user_data.get("pending_change")
+    if not pending:
+        await update.message.reply_text("❌ هیچ تغییر در انتظار تاییدی وجود ندارد.")
+        return
+    
+    action = pending.get("action")
+    action_names = {
+        "add": "اضافه کردن",
+        "delete": "حذف",
+        "update": "به‌روزرسانی",
+        "clear": "پاک کردن همه"
+    }
+    action_name = action_names.get(action, "تغییر")
+    
+    context.user_data.pop("pending_change", None)
+    
+    await update.message.reply_text(
+        f"❌ **{action_name} لغو شد.**\n\n"
+        f"تغییری در برنامه اعمال نشد.",
+        reply_markup=get_main_keyboard()
+    )
+
+# ==================== گزارش ====================
+
+async def handle_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    today = get_today_date()
+    activities = get_today_activities(user_id)
+    subject_status = get_subject_status(user_id)
+    
+    if not activities and not subject_status:
+        await update.message.reply_text(
+            "📭 هنوز فعالیتی ثبت نکردی.\n"
+            "📝 با دکمه <b>برنامه امروز</b> شروع کن.",
+            reply_markup=get_main_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    text = f"📊 **گزارش {get_today_shamsi()}** - ساعت {get_iran_time_str()}\n\n"
+    
+    if activities:
+        total_time = sum(a.get("actual_duration", a.get("planned_duration", 0)) for a in activities)
+        done = len([a for a in activities if a.get("status") == "done"])
+        scores = [a.get("score") for a in activities if a.get("score") is not None]
+        avg_score = sum(scores) / len(scores) if scores else 0
+        text += f"⏱ زمان کل: {format_time_hours_minutes(total_time)}\n"
+        text += f"✅ تکمیل‌شده: {done}/{len(activities)}\n"
+        if scores:
+            text += f"📊 میانگین نمره: {avg_score:.1f}%\n"
+        text += "\n📋 **فعالیت‌ها:**\n"
+        for a in activities:
+            status = "✅" if a.get("status") == "done" else "⬜"
+            text += f"{status} {a['subject']}"
+            if a.get('topic'):
+                text += f" - {a['topic']}"
+            if a.get('score') is not None:
+                text += f" ({a['score']:.0f}%)"
+            text += f" - {a.get('actual_duration', a.get('planned_duration', 0))} دقیقه\n"
+    
+    if subject_status:
+        text += "\n📚 **وضعیت دروس:**\n"
+        for s in subject_status[:5]:
+            level_emoji = "🔴" if s.get("level") == "weak" else "🟡" if s.get("level") == "medium" else "🟢"
+            text += f"{level_emoji} {s['subject']}: {s.get('avg_score', 0):.0f}%"
+            if s.get('progress', 0) > 0:
+                text += f" ({s['progress']:.0f}% پیشرفت)"
+            text += "\n"
+    
+    user_data = get_user_data(str(update.effective_user.id))
+    if user_data:
+        level = user_data.get('plan_level', 0)
+        level_name = get_plan_level_name(level)
+        level_emoji = get_plan_level_emoji(level)
+        text += f"\n📊 سطح برنامه: {level_emoji} {level_name}"
+        
+        remaining = get_remaining_messages(user_id)
+        text += f"\n💬 پیام‌های AI باقی‌مانده: {remaining}"
+    
+    await update.message.reply_text(text, reply_markup=get_main_keyboard(), parse_mode=ParseMode.HTML)
+
+# ==================== خرید اشتراک و پرداخت ====================
+
+async def handle_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    quota = get_user_quota(user_id)
+    remaining = get_remaining_messages(user_id)
+    
+    plan_names = {
+        "trial": "🌱 آزمایشی",
+        "basic": "📘 پایه", 
+        "premium": "🚀 پیشرفته"
+    }
+    
+    plan_type = quota.get("plan_type", "trial") if quota else "trial"
+    plan_name = plan_names.get(plan_type, "آزمایشی")
+    
+    text = f"""💰 **اشتراک و خرید**
+
+📌 وضعیت فعلی: {plan_name}
+💬 پیام‌های باقی‌مانده: {remaining}
+
+---
+
+🌟 **پلن‌های اشتراک:**
+
+📘 **پایه** - ۵۰۰,۰۰۰ تومان
+• ۱۵ پیام AI در روز
+• برنامه روزانه هوشمند
+• تحلیل عملکرد هفتگی
+• پشتیبانی ویژه
+
+🚀 **پیشرفته** - ۱,۰۰۰,۰۰۰ تومان
+• ۳۰ پیام AI در روز
+• حالت High برای پاسخ‌های دقیق‌تر
+• تحلیل عمیق و استراتژی آزمون
+• برنامه شخصی‌سازی‌شده روزانه
+• اولویت در پشتیبانی
+
+---
+
+💳 **روش پرداخت:**
+
+شماره کارت: **۶۲۱۹۸۶۱۸۳۷۵۶۹۶۸۹**
+به نام: **مصطفی فرخندئی**
+
+📸 بعد از واریز، عکس رسید رو بفرست تا اشتراکت فعال بشه.
+
+🔹 اشتراک به مدت **یک ماه** فعال می‌شود.
+🔹 تمدید خودکار: یک روز قبل از انقضا یادآوری می‌شود.
 """
     
-    context.user_data["awaiting_payment_receipt"] = True
-    
-    await update.message.reply_text(
-        text,
-        reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True),
-        parse_mode=ParseMode.HTML
-    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# -----------------------------------------------------------
-# 3. اضافه کردن تابع هندلر عکس فیش
-# -----------------------------------------------------------
 async def handle_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پردازش عکس فیش پرداختی"""
-    user_id = update.effective_user.id
-    
-    # بررسی آیا کاربر در انتظار ارسال فیش است
-    if not context.user_data.get("awaiting_payment_receipt"):
-        await update.message.reply_text(
-            "❌ شما در حال خرید کوپن نیستید.\n"
-            "لطفا از منوی کوپن استفاده کنید."
-        )
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
         return
     
-    # بررسی وجود عکس
-    if not update.message.photo:
-        await update.message.reply_text(
-            "❌ لطفا یک عکس از فیش پرداختی ارسال کنید.",
-            reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True)
-        )
-        return
-    
-    # دریافت عکس با کیفیت مناسب
-    photo = update.message.photo[-1]  # آخرین عکس با بیشترین کیفیت
+    photo = update.message.photo[-1]
     file_id = photo.file_id
+    user = update.effective_user
     
-    # دریافت اطلاعات کاربر
-    user_info = get_user_info(user_id)
-    username = user_info["username"] if user_info else "نامشخص"
-    user_full_name = update.effective_user.full_name or "نامشخص"
-    
-    # ایجاد درخواست خرید کوپن
-    request_data = create_coupon_request(
-        user_id=user_id,
-        request_type="purchase",
-        amount=400000,
-        receipt_image=file_id  # ذخیره file_id برای نمایش به ادمین
+    execute_query(
+        """INSERT INTO pending_payments (user_id, photo_file_id, caption)
+           VALUES (%s, %s, %s)""",
+        (user_id, file_id, f"رسید پرداخت از {user.full_name} (@{user.username})")
     )
     
-    if not request_data:
-        await update.message.reply_text(
-            "❌ خطا در ثبت درخواست. لطفا مجدد تلاش کنید.",
-            reply_markup=get_coupon_main_keyboard()
-        )
-        return
+    caption = f"""📸 **رسید جدید پرداخت**
+
+👤 کاربر: {user.full_name}
+🆔 ID: {user.id}
+📱 یوزرنیم: @{user.username if user.username else 'ندارد'}
+📅 تاریخ: {get_today_shamsi()}
+⏰ ساعت: {get_iran_time_str()}
+
+📌 برای تایید اشتراک، از دکمه‌های زیر استفاده کن:
+
+[✅ تایید اشتراک]  [❌ رد]
+"""
     
-    date_str, time_str = get_iran_time()
-    
-    # اطلاع به کاربر
-    await update.message.reply_text(
-        f"✅ <b>عکس فیش دریافت شد!</b>\n\n"
-        f"📋 <b>اطلاعات درخواست:</b>\n"
-        f"• شماره درخواست: #{request_data['request_id']}\n"
-        f"• مبلغ: ۴۰,۰۰۰ تومان\n"
-        f"• تاریخ: {date_str}\n"
-        f"• زمان: {time_str}\n\n"
-        f"⏳ درخواست شما برای بررسی به ادمین ارسال شد.\n"
-        f"پس از تأیید، کوپن به حساب شما اضافه می‌شود.",
-        reply_markup=get_coupon_main_keyboard(),
-        parse_mode=ParseMode.HTML
-    )
-    
-    # پاک کردن وضعیت انتظار
-    context.user_data.pop("awaiting_payment_receipt", None)
-    context.user_data.pop("selected_service", None)
-    context.user_data.pop("awaiting_purchase_method", None)
-    
-    # ارسال خودکار به همه ادمین‌ها
     for admin_id in ADMIN_IDS:
         try:
-            # ارسال عکس به ادمین
-            caption = f"""
-🏦 <b>درخواست خرید کوپن جدید</b>
-
-📋 <b>اطلاعات درخواست:</b>
-• شماره درخواست: #{request_data['request_id']}
-• کاربر: {escape_html_for_telegram(user_full_name)}
-• آیدی: <code>{user_id}</code>
-• نام کاربری: @{username or 'ندارد'}
-• مبلغ: ۴۰,۰۰۰ تومان
-• تاریخ: {date_str}
-• زمان: {time_str}
-
-📝 برای تأیید دستور زیر را وارد کنید:
-<code>/verify_coupon {request_data['request_id']}</code>
-
-🔍 برای مشاهده درخواست‌ها:
-/coupon_requests
-"""
-            
             await context.bot.send_photo(
                 chat_id=admin_id,
                 photo=file_id,
                 caption=caption,
                 parse_mode=ParseMode.HTML
             )
-            
         except Exception as e:
             logger.error(f"خطا در ارسال به ادمین {admin_id}: {e}")
     
-    logger.info(f"درخواست خرید کوپن ثبت شد: کاربر {user_id} - درخواست #{request_data['request_id']}")
-async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, text: str) -> None:
-    """پردازش متن ارسال شده به جای عکس فیش"""
-    if text == "🔙 بازگشت":
-        context.user_data.pop("awaiting_payment_receipt", None)
-        await coupon_menu_handler(update, context)
-        return
-    
-    # اگر کاربر متن ارسال کرد، راهنمایی به ارسال عکس
     await update.message.reply_text(
-        "❌ لطفا عکس فیش پرداختی را ارسال کنید.\n\n"
-        "📸 باید از روی فیش بانکی یا رسید پرداخت عکس بگیرید و ارسال کنید.\n\n"
-        "⚠️ ارسال متن پذیرفته نیست.",
-        reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True)
-    )
-# -----------------------------------------------------------
-# 12. هندلر کسب کوپن از مطالعه
-# -----------------------------------------------------------
-
-async def handle_study_coupon_earning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پردازش کسب کوپن از طریق مطالعه"""
-    user_id = update.effective_user.id
-    
-    # بررسی استرک کاربر
-    streak_info = check_study_streak(user_id)
-    
-    text = """
-⏰ **کسب کوپن از طریق مطالعه**
-
-📋 شرایط کسب کوپن:
-• ۲ روز متوالی مطالعه
-• هر روز حداقل ۶ ساعت (۳۶۰ دقیقه) مطالعه
-• جلسات معتبر (حداقل ۳۰ دقیقه)
-
-🎯 **آمار مطالعه ۲ روز اخیر شما:**
-"""
-    
-    if streak_info:
-        if streak_info["eligible"]:
-            text += f"""
-✅ دیروز: {streak_info['yesterday_minutes'] // 60} ساعت و {streak_info['yesterday_minutes'] % 60} دقیقه
-✅ امروز: {streak_info['today_minutes'] // 60} ساعت و {streak_info['today_minutes'] % 60} دقیقه
-🎯 مجموع: {streak_info['total_hours']} ساعت در ۲ روز
-
-🎉 **شما واجد شرایط کسب کوپن هستید!**
-
-💰 **آیا می‌خواهید کوپن دریافت کنید؟**
-"""
-            
-            keyboard = [
-                ["✅ دریافت کوپن"],
-                ["🔙 بازگشت"]
-            ]
-            
-            context.user_data["eligible_for_coupon"] = streak_info
-            
-        else:
-            yesterday_hours = streak_info["yesterday_minutes"] // 60
-            yesterday_mins = streak_info["yesterday_minutes"] % 60
-            today_hours = streak_info["today_minutes"] // 60
-            today_mins = streak_info["today_minutes"] % 60
-            
-            # نمایش اعداد واقعی
-            text += f"""
-📊 دیروز: {yesterday_hours} ساعت و {yesterday_mins} دقیقه
-📊 امروز: {today_hours} ساعت و {today_mins} دقیقه
-
-⚠️ **برای کسب کوپن نیاز دارید:**
-• هر روز حداقل ۶ ساعت (۳۶۰ دقیقه) مطالعه کنید
-• این روند را برای ۲ روز متوالی ادامه دهید
-
-💡 **نکته:** سیستم به صورت خودکار بررسی می‌کند و هنگام واجد شرایط بودن، کوپن را اعطا می‌کند.
-"""
-            
-            keyboard = [
-                ["🔄 بررسی مجدد"],
-                ["🔙 بازگشت"]
-            ]
-    else:
-        text += """
-❌ **خطا در دریافت اطلاعات مطالعه**
-
-لطفا بعداً مجدد تلاش کنید.
-"""
-        keyboard = [["🔙 بازگشت"]]
-    
-    await update.message.reply_text(
-        text,
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-        parse_mode=ParseMode.MARKDOWN
-)
-
-# -----------------------------------------------------------
-# 13. دستورات ادمین جدید
-# -----------------------------------------------------------
-
-
-
-async def set_card_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """دستور تغییر شماره کارت ادمین"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    if len(context.args) < 2:
-        current_card = get_admin_card_info()
-        
-        text = f"""
-🏦 <b>شماره کارت فعلی:</b>
-
-📋 <b>اطلاعات کارت:</b>
-• شماره: <code>{current_card['card_number']}</code>
-• صاحب حساب: {escape_html_for_telegram(current_card['card_owner'])}
-📝 <b>برای تغییر، از فرمت زیر استفاده کنید:</b>
-<code>/set_card &lt;شماره_کارت&gt; &lt;نام_صاحب_کارت&gt;</code>
-
-مثال:
-<code>/set_card ۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸ علی_محمدی</code>
-"""
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-        return
-    
-    card_number = context.args[0]
-    card_owner = " ".join(context.args[1:])
-    
-    if set_admin_card_info(card_number, card_owner):
-        date_str, time_str = get_iran_time()
-        
-        text = f"""
-✅ <b>شماره کارت ذخیره شد!</b>
-
-🏦 <b>اطلاعات جدید:</b>
-• شماره کارت: <code>{card_number}</code>
-• صاحب حساب: {escape_html_for_telegram(card_owner)}
-• تاریخ تغییر: {date_str}
-• زمان: {time_str}
-
-📌 این شماره کارت از این پس برای خرید کوپن نمایش داده می‌شود.
-"""
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-        
-        # اطلاع به همه ادمین‌ها
-        for admin_id in ADMIN_IDS:
-            if admin_id != user_id:
-                try:
-                    await context.bot.send_message(
-                        admin_id,
-                        f"🏦 <b>شماره کارت تغییر کرد</b>\n\n"
-                        f"توسط: {escape_html_for_telegram(update.effective_user.full_name or 'نامشخص')}\n"
-                        f"شماره جدید: <code>{card_number}</code>\n"
-                        f"صاحب حساب: {escape_html_for_telegram(card_owner)}\n"
-                        f"زمان: {time_str}",
-                        parse_mode=ParseMode.HTML
-                    )
-                except Exception as e:
-                    logger.error(f"خطا در اطلاع به ادمین {admin_id}: {e}")
-    else:
-        await update.message.reply_text("❌ خطا در ذخیره اطلاعات کارت.")
-
-
-async def coupon_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش درخواست‌های کوپن برای ادمین"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    requests = get_pending_coupon_requests()
-    
-    if not requests:
-        await update.message.reply_text(
-            "📭 هیچ درخواست کوپنی در انتظار نیست.",
-            reply_markup=get_admin_coupon_keyboard()
-        )
-        return
-    
-    text = f"📋 **درخواست‌های کوپن در انتظار: {len(requests)}**\n\n"
-    
-    for req in requests[:5]:
-        username = req['username'] or "نامشخص"
-        amount = f"{req['amount']:,} تومان" if req['amount'] else "رایگان"
-        request_type = "🛒 خرید" if req['request_type'] == "purchase" else "🎫 استفاده"
-        
-        text += f"**{request_type}** - #{req['request_id']}\n"
-        text += f"👤 {html.escape(username)} (آیدی: `{req['user_id']}`)\n"
-        
-        if req['service_type']:
-            service_names = {
-                'call': '📞 تماس تلفنی',
-                'analysis': '📊 تحلیل گزارش',
-                'correction': '✏️ تصحیح آزمون',
-                'exam': '📝 آزمون شخصی',
-                'test_analysis': '📈 تحلیل آزمون'
-            }
-            service = service_names.get(req['service_type'], req['service_type'])
-            text += f"📋 خدمت: {service}\n"
-        
-        if req['amount']:
-            text += f"💰 مبلغ: {amount}\n"
-        
-        text += f"📅 {req['created_at'].strftime('%Y/%m/%d %H:%M')}\n\n"
-    
-    await update.message.reply_text(
-        text,
-        reply_markup=get_admin_coupon_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def verify_coupon_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """تأیید درخواست کوپن توسط ادمین"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ فرمت صحیح:\n"
-            "/verify_coupon <شناسه_درخواست>\n\n"
-            "مثال:\n"
-            "/verify_coupon 123"
-        )
-        return
-    
-    try:
-        request_id = int(context.args[0])
-        
-        if approve_coupon_request(request_id, f"تأیید شده توسط ادمین {user_id}"):
-            await update.message.reply_text(
-                f"✅ درخواست #{request_id} تأیید شد.\n"
-                f"کوپن برای کاربر ایجاد و ارسال شد."
-            )
-        else:
-            await update.message.reply_text(
-                f"❌ خطا در تأیید درخواست #{request_id}.\n"
-                f"ممکن است قبلاً تأیید شده باشد."
-            )
-            
-    except ValueError:
-        await update.message.reply_text("❌ شناسه باید عددی باشد.")
-    except Exception as e:
-        logger.error(f"خطا در تأیید کوپن: {e}")
-        await update.message.reply_text(f"❌ خطا: {e}")
-
-async def coupon_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش آمار کوپن‌ها برای ادمین"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    try:
-        # آمار کلی
-        query_total = """
-        SELECT 
-            COUNT(*) as total_coupons,
-            COUNT(CASE WHEN status = 'active' THEN 1 END) as active_coupons,
-            COUNT(CASE WHEN status = 'used' THEN 1 END) as used_coupons,
-            COUNT(CASE WHEN coupon_source = 'study_streak' THEN 1 END) as study_coupons,
-            COUNT(CASE WHEN coupon_source = 'purchased' THEN 1 END) as purchased_coupons,
-            COALESCE(SUM(value), 0) as total_value
-        FROM coupons
-        """
-        total_stats = db.execute_query(query_total, fetch=True)
-        
-        # آمار امروز
-        date_str, _ = get_iran_time()
-        query_today = """
-        SELECT 
-            COUNT(*) as today_coupons,
-            COUNT(CASE WHEN coupon_source = 'study_streak' THEN 1 END) as today_study,
-            COUNT(CASE WHEN coupon_source = 'purchased' THEN 1 END) as today_purchased,
-            COALESCE(SUM(value), 0) as today_value
-        FROM coupons
-        WHERE earned_date = %s
-        """
-        today_stats = db.execute_query(query_today, (date_str,), fetch=True)
-        
-        # درخواست‌های در انتظار
-        query_pending = """
-        SELECT COUNT(*) FROM coupon_requests WHERE status = 'pending'
-        """
-        pending_count = db.execute_query(query_pending, fetch=True)
-        
-        text = f"""
-📊 **آمار کامل سیستم کوپن**
-────────────────────
-📅 تاریخ: {date_str}
-
-📈 **آمار کلی:**
-• کل کوپن‌ها: {total_stats[0]:,}
-• کوپن‌های فعال: {total_stats[1]:,}
-• کوپن‌های استفاده‌شده: {total_stats[2]:,}
-• کسب از مطالعه: {total_stats[3]:,}
-• خریداری شده: {total_stats[4]:,}
-• مجموع ارزش: {total_stats[5]:,} ریال
-
-🎯 **امروز:**
-• کوپن‌های امروز: {today_stats[0] if today_stats else 0}
-• کسب از مطالعه: {today_stats[1] if today_stats else 0}
-• خریداری شده: {today_stats[2] if today_stats else 0}
-• ارزش امروز: {today_stats[3] if today_stats else 0:,} ریال
-
-⏳ **در انتظار:**
-• درخواست‌های بررسی: {pending_count[0] if pending_count else 0}
-
-💎 **میانگین‌ها:**
-• ارزش هر کوپن: ۴۰,۰۰۰ تومان
-• ارزش کل: {total_stats[5] // 10:,} تومان
-"""
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت آمار کوپن: {e}")
-        await update.message.reply_text(f"❌ خطا: {e}")
-async def show_user_coupons(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
-    """نمایش کوپن‌های کاربر"""
-    logger.info(f"🔍 نمایش کوپن‌های کاربر {user_id}")
-    
-    try:
-        # ابتدا بررسی کنیم که آیا کاربر فعال است
-        if not is_user_active(user_id):
-            await update.message.reply_text(
-                "❌ حساب کاربری شما فعال نیست.\nلطفا منتظر تأیید ادمین باشید.",
-                reply_markup=get_main_menu_keyboard()
-            )
-            return
-        
-        # دریافت کوپن‌های کاربر
-        logger.info(f"🔍 فراخوانی get_user_coupons برای کاربر {user_id}...")
-        active_coupons = get_user_coupons(user_id, "active")
-        all_coupons = get_user_coupons(user_id)  # همه کوپن‌ها
-        
-        logger.info(f"🔍 نتایج: فعال={len(active_coupons)}، کل={len(all_coupons)}")
-        
-        # نمایش لاگ برای دیباگ
-        for i, coupon in enumerate(all_coupons[:5]):
-            logger.info(f"  🎫 کوپن {i+1}: {coupon['coupon_code']} - {coupon['status']} - {coupon['value']} ریال")
-        
-        if not all_coupons:
-            logger.info(f"📭 کاربر {user_id} هیچ کوپنی ندارد")
-            await update.message.reply_text(
-                "📭 **شما هیچ کوپنی ندارید.**\n\n"
-                "🛒 برای خرید کوپن از گزینه «🛒 خرید کوپن» استفاده کنید.\n"
-                "⏰ یا با مطالعه مستمر می‌توانید کوپن کسب کنید.",
-                reply_markup=get_coupon_management_keyboard()
-            )
-            return
-        
-        # محاسبه مجموع ارزش
-        total_value = sum(c["value"] for c in all_coupons)
-        used_coupons = [c for c in all_coupons if c["status"] == "used"]
-        
-        # ساخت پیام
-        text = f"""
-🎫 **کوپن‌های من**
-
-📊 **آمار کلی:**
-• کل کوپن‌ها: {len(all_coupons)}
-• فعال: {len(active_coupons)}
-• استفاده‌شده: {len(used_coupons)}
-• مجموع ارزش: {total_value // 10:,} تومان
-"""
-        
-        if active_coupons:
-            text += "\n✅ **کوپن‌های فعال شما:**\n\n"
-            for i, coupon in enumerate(active_coupons[:10], 1):
-                source_emoji = "⏰" if coupon.get("source") == "study_streak" else "💳"
-                text += f"{i}. {source_emoji} `{coupon['coupon_code']}`\n"
-                text += f"   📅 {coupon.get('earned_date', 'نامشخص')} | "
-                text += f"💰 {coupon['value'] // 10:,} تومان\n"
-            
-            if len(active_coupons) > 10:
-                text += f"\n📊 و {len(active_coupons)-10} کوپن دیگر...\n"
-        else:
-            text += "\n📭 **هیچ کوپن فعالی ندارید.**\n"
-        
-        if used_coupons:
-            text += "\n📋 **کوپن‌های استفاده‌شده:**\n"
-            for i, coupon in enumerate(used_coupons[:3], 1):
-                text += f"{i}. `{coupon['coupon_code']}` - "
-                text += f"برای: {coupon.get('used_for', 'نامشخص')} | "
-                text += f"تاریخ: {coupon.get('used_date', 'نامشخص')}\n"
-            
-            if len(used_coupons) > 3:
-                text += f"... و {len(used_coupons)-3} کوپن دیگر\n"
-        
-        text += "\n💡 هر کوپن را می‌توانید برای هر خدمتی استفاده کنید."
-        
-        # ارسال پیام
-        await update.message.reply_text(
-            text,
-            reply_markup=get_coupon_management_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        logger.info(f"✅ کوپن‌های کاربر {user_id} نمایش داده شد")
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در نمایش کوپن‌های کاربر {user_id}: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ خطا در دریافت اطلاعات کوپن‌ها.\nلطفا مجدد تلاش کنید.",
-            reply_markup=get_main_menu_keyboard()
-        )
-
-async def show_user_requests(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
-    """نمایش درخواست‌های کاربر"""
-    try:
-        query = """
-        SELECT request_id, request_type, service_type, amount, status, 
-               created_at, admin_note
-        FROM coupon_requests
-        WHERE user_id = %s
-        ORDER BY created_at DESC
-        LIMIT 10
-        """
-        
-        results = db.execute_query(query, (user_id,), fetchall=True)
-        
-        if not results:
-            text = "📭 **هیچ درخواستی ثبت نکرده‌اید.**"
-        else:
-            text = "📋 **درخواست‌های شما**\n\n"
-            
-            for row in results:
-                request_id, request_type, service_type, amount, status, created_at, admin_note = row
-                
-                type_emoji = "🛒" if request_type == "purchase" else "🎫"
-                status_emoji = {
-                    "pending": "⏳",
-                    "approved": "✅",
-                    "rejected": "❌",
-                    "completed": "🎉"
-                }.get(status, "❓")
-                
-                text += f"{type_emoji} **درخواست #{request_id}**\n"
-                text += f"{status_emoji} وضعیت: {status}\n"
-                
-                if service_type:
-                    service_names = {
-                        'call': '📞 تماس تلفنی',
-                        'analysis': '📊 تحلیل گزارش',
-                        'correction': '✏️ تصحیح آزمون',
-                        'exam': '📝 آزمون شخصی',
-                        'test_analysis': '📈 تحلیل آزمون'
-                    }
-                    service = service_names.get(service_type, service_type)
-                    text += f"📋 خدمت: {service}\n"
-                
-                if amount:
-                    text += f"💰 مبلغ: {amount:,} تومان\n"
-                
-                text += f"📅 تاریخ: {created_at.strftime('%Y/%m/%d %H:%M')}\n"
-                
-                if admin_note:
-                    text += f"📝 پیام ادمین: {admin_note}\n"
-                
-                text += "─" * 15 + "\n"
-        
-        await update.message.reply_text(
-            text,
-            reply_markup=get_coupon_management_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-    except Exception as e:
-        logger.error(f"خطا در نمایش درخواست‌های کاربر: {e}")
-        await update.message.reply_text(
-            "❌ خطا در دریافت درخواست‌ها.",
-            reply_markup=get_coupon_management_keyboard()
-                )
-
-async def send_midday_report(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال گزارش نیم‌روز ساعت 15:00"""
-    try:
-        logger.info("🕒 شروع ارسال گزارش‌های نیم‌روز...")
-        
-        # دریافت کاربران فعال
-        query = """
-        SELECT user_id, username, grade, field
-        FROM users
-        WHERE is_active = TRUE
-        """
-        
-        results = db.execute_query(query, fetchall=True)
-        
-        if not results:
-            logger.info("📭 هیچ کاربر فعالی وجود ندارد")
-            return
-        
-        date_str, time_str = get_iran_time()
-        total_sent = 0
-        
-        for row in results:
-            user_id, username, grade, field = row
-            
-            # بررسی آیا قبلاً گزارش ارسال شده
-            if check_report_sent_today(user_id, "midday"):
-                continue
-            
-            try:
-                # دریافت جلسات امروز
-                today_sessions = get_today_sessions(user_id)
-                
-                # دریافت رتبه هفتگی
-                weekly_rank, weekly_minutes, gap_minutes = get_user_weekly_rank(user_id)
-                
-                # دریافت 5 نفر برتر هفتگی
-                top_weekly = get_weekly_rankings(limit=5)
-                
-                # ساخت گزارش
-                text = f"📊 <b>گزارش نیم‌روز شما</b>\n\n"
-                text += f"📅 <b>تاریخ:</b> {date_str}\n"
-                text += f"🕒 <b>زمان:</b> {time_str}\n\n"
-                
-                if today_sessions:
-                    text += f"✅ <b>فعالیت‌های امروز:</b>\n"
-                    for i, session in enumerate(today_sessions, 1):
-                        start_time = session["start_time"]
-                        if isinstance(start_time, datetime):
-                            session_time = start_time.strftime("%H:%M")
-                        else:
-                            session_time = "??:??"
-                        
-                        text += f"• {session_time} | {session['subject']} ({session['topic'][:30]}) | {session['minutes']} دقیقه\n"
-                    
-                    total_today = sum(s["minutes"] for s in today_sessions)
-                    text += f"\n📈 <b>آمار امروز:</b>\n"
-                    text += f"⏰ مجموع: {total_today} دقیقه\n"
-                    text += f"📖 جلسات: {len(today_sessions)} جلسه\n"
-                else:
-                    text += f"📭 <b>هیچ فعالیتی امروز ثبت نکرده‌اید.</b>\n\n"
-                    text += f"🔥 <i>هنوز فرصت داری! همین الان یک جلسه شروع کن!</i>\n\n"
-                
-                text += f"\n🏆 <b>۵ نفر برتر هفتگی:</b>\n"
-                for i, rank in enumerate(top_weekly[:5], 1):
-                    medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i-1]
-                    
-                    # دریافت نام کاربر
-                    user_display = rank["username"] or "کاربر"
-                    if user_display == "None":
-                        user_display = "کاربر"
-                    
-                    hours = rank["total_minutes"] // 60
-                    mins = rank["total_minutes"] % 60
-                    
-                    if hours > 0 and mins > 0:
-                        time_display = f"{hours}h {mins}m"
-                    elif hours > 0:
-                        time_display = f"{hours}h"
-                    else:
-                        time_display = f"{mins}m"
-                    
-                    text += f"{medal} {user_display} ({rank['grade']} {rank['field']}): {time_display}\n"
-                
-                if weekly_rank:
-                    text += f"\n📊 <b>موقعیت شما در هفته:</b>\n"
-                    text += f"🎯 شما در رتبه <b>{weekly_rank}</b> جدول هفتگی هستید\n"
-                    
-                    if gap_minutes > 0 and weekly_rank > 5:
-                        text += f"⏳ <b>{gap_minutes} دقیقه</b> تا ۵ نفر اول فاصله دارید\n"
-                    
-                    text += f"⏰ مطالعه هفتگی شما: {weekly_minutes} دقیقه\n"
-                
-                text += f"\n💪 <i>ادامه بده! فردا می‌تونی جزو برترها باشی!</i>"
-                
-                # ارسال گزارش
-                await context.bot.send_message(
-                    user_id,
-                    text,
-                    parse_mode=ParseMode.HTML
-                )
-                
-                # علامت‌گذاری ارسال شده
-                mark_report_sent(user_id, "midday")
-                total_sent += 1
-                
-                await asyncio.sleep(0.1)  # تأخیر برای جلوگیری از محدودیت
-                
-            except Exception as e:
-                logger.error(f"خطا در ارسال گزارش به کاربر {user_id}: {e}")
-                continue
-        
-        logger.info(f"✅ گزارش نیم‌روز به {total_sent} کاربر ارسال شد")
-        
-    except Exception as e:
-        logger.error(f"خطا در ارسال گزارش‌های نیم‌روز: {e}")
-
-
-async def send_night_report(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال گزارش شبانه ساعت 23:00"""
-    try:
-        logger.info("🌙 شروع ارسال گزارش‌های شبانه...")
-        
-        # دریافت کاربران فعال
-        query = """
-        SELECT user_id, username, grade, field
-        FROM users
-        WHERE is_active = TRUE
-        """
-        
-        results = db.execute_query(query, fetchall=True)
-        
-        if not results:
-            logger.info("📭 هیچ کاربر فعالی وجود ندارد")
-            return
-        
-        date_str, _ = get_iran_time()  # حالا فرمت YYYY-MM-DD
-        time_str = "23:00"
-        total_sent = 0
-        
-        for row in results:
-            user_id, username, grade, field = row
-            
-            # بررسی آیا قبلاً گزارش ارسال شده
-            if check_report_sent_today(user_id, "night"):
-                continue
-            
-            try:
-                # دریافت آمار امروز از daily_rankings (با فرمت جدید)
-                query_today = """
-                SELECT total_minutes FROM daily_rankings
-                WHERE user_id = %s AND date = %s
-                """
-                today_stats = db.execute_query(query_today, (user_id, date_str), fetch=True)
-                today_minutes = today_stats[0] if today_stats else 0
-                
-                # همچنین از study_sessions هم چک کنیم برای اطمینان
-                query_sessions = """
-                SELECT COALESCE(SUM(minutes), 0) as total_minutes,
-                       COUNT(*) as session_count
-                FROM study_sessions
-                WHERE user_id = %s AND date LIKE %s AND completed = TRUE
-                """
-                # استفاده از LIKE برای تطابق هر دو فرمت
-                sessions_result = db.execute_query(query_sessions, (user_id, f"%{date_str[-5:]}%"), fetch=True)
-                
-                if sessions_result:
-                    sessions_total, session_count = sessions_result
-                    # اگر daily_rankings 0 بود اما sessions وجود داشت
-                    if today_minutes == 0 and sessions_total > 0:
-                        today_minutes = sessions_total
-                
-                # دریافت آمار دیروز
-                yesterday = (datetime.now(IRAN_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
-                query_yesterday = """
-                SELECT total_minutes FROM daily_rankings
-                WHERE user_id = %s AND date = %s
-                """
-                yesterday_stats = db.execute_query(query_yesterday, (user_id, yesterday), fetch=True)
-                yesterday_minutes = yesterday_stats[0] if yesterday_stats else 0
-                
-                # دریافت رتبه هفتگی
-                weekly_rank, weekly_minutes, gap_minutes = get_user_weekly_rank(user_id)
-                
-                # ساخت گزارش
-                text = f"🌙 <b>گزارش پایان روز شما</b>\n\n"
-                text += f"📅 <b>تاریخ:</b> {date_str.replace('-', '/')}\n"
-                text += f"🕒 <b>زمان:</b> {time_str}\n\n"
-                
-                if today_minutes > 0:
-                    # دریافت جلسات با جزئیات
-                    query_sessions_detail = """
-                    SELECT subject, topic, minutes
-                    FROM study_sessions
-                    WHERE user_id = %s AND date LIKE %s AND completed = TRUE
-                    ORDER BY start_time
-                    """
-                    sessions_detail = db.execute_query(query_sessions_detail, (user_id, f"%{date_str[-5:]}%"), fetchall=True)
-                    
-                    text += f"✅ <b>خلاصه فعالیت‌های امروز:</b>\n"
-                    
-                    subjects = {}
-                    
-                    for session in sessions_detail:
-                        subject, topic, minutes = session
-                        if subject in subjects:
-                            subjects[subject] += minutes
-                        else:
-                            subjects[subject] = minutes
-                    
-                    # نمایش دروس
-                    for subject, minutes in subjects.items():
-                        text += f"• {subject}: {minutes} دقیقه\n"
-                    
-                    text += f"\n📊 <b>آمار کامل امروز:</b>\n"
-                    text += f"⏰ مجموع مطالعه: {today_minutes} دقیقه\n"
-                    text += f"📖 تعداد جلسات: {len(sessions_detail) if sessions_detail else 0}\n"
-                    
-                    # مقایسه با دیروز
-                    if yesterday_minutes > 0:
-                        difference = today_minutes - yesterday_minutes
-                        if difference > 0:
-                            text += f"📈 نسبت به دیروز: +{difference} دقیقه بهبود 🎉\n"
-                        elif difference < 0:
-                            text += f"📉 نسبت به دیروز: {abs(difference)} دقیقه کاهش 😔\n"
-                        else:
-                            text += f"📊 نسبت به دیروز: بدون تغییر\n"
-                    else:
-                        text += f"🎯 اولین روز مطالعه! آفرین! 🎉\n"
-                    
-                    # دریافت رتبه امروز
-                    query_rank_today = """
-                    SELECT COUNT(*) + 1 FROM daily_rankings
-                    WHERE date = %s AND total_minutes > %s
-                    """
-                    rank_today = db.execute_query(query_rank_today, (date_str, today_minutes), fetch=True)
-                    if rank_today:
-                        text += f"🏅 رتبه امروز: {rank_today[0]}\n"
-                
-                else:
-                    text += f"📭 <b>امروز هیچ مطالعه‌ای ثبت نکردید.</b>\n\n"
-                    text += f"😔 نگران نباش! فردا یک روز جدید است!\n\n"
-                
-                # اطلاعات هفتگی
-                if weekly_rank:
-                    text += f"\n📅 <b>آمار هفتگی:</b>\n"
-                    text += f"🎯 رتبه هفتگی: {weekly_rank}\n"
-                    text += f"⏰ مطالعه هفتگی: {weekly_minutes} دقیقه\n"
-                    
-                    if gap_minutes > 0 and weekly_rank > 5:
-                        text += f"🎯 {gap_minutes} دقیقه تا ۵ نفر اول فاصله دارید\n"
-                
-                text += f"\n💡 <b>هدف فردا:</b>\n"
-                if today_minutes > 0:
-                    target = today_minutes + 30  # 30 دقیقه بیشتر از امروز
-                    text += f"🎯 حداقل {target} دقیقه مطالعه\n"
-                else:
-                    text += f"🎯 حداقل 60 دقیقه مطالعه\n"
-                
-                text += f"\n🌙 شب بخیر و فردایی پرانرژی! ✨"
-                
-                # ارسال گزارش
-                await context.bot.send_message(
-                    user_id,
-                    text,
-                    parse_mode=ParseMode.HTML
-                )
-                
-                # علامت‌گذاری ارسال شده
-                mark_report_sent(user_id, "night")
-                total_sent += 1
-                
-                await asyncio.sleep(0.1)  # تأخیر برای جلوگیری از محدودیت
-                
-            except Exception as e:
-                logger.error(f"خطا در ارسال گزارش شبانه به کاربر {user_id}: {e}")
-                continue
-        
-        logger.info(f"✅ گزارش شبانه به {total_sent} کاربر ارسال شد")
-        
-    except Exception as e:
-        logger.error(f"خطا در ارسال گزارش‌های شبانه: {e}")
-def convert_date_format(date_str: str) -> str:
-    """تبدیل تاریخ از YYYY/MM/DD به YYYY-MM-DD"""
-    if '/' in date_str:
-        return date_str.replace('/', '-')
-    return date_str
-async def debug_daily_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی آمار daily_rankings"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    try:
-        date_str, _ = get_iran_time()
-        yesterday = (datetime.now(IRAN_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
-        
-        query = """
-        SELECT date, user_id, total_minutes 
-        FROM daily_rankings 
-        WHERE date IN (%s, %s)
-        ORDER BY date DESC, total_minutes DESC
-        """
-        
-        results = db.execute_query(query, (date_str, yesterday), fetchall=True)
-        
-        text = f"📊 آمار daily_rankings\n\n"
-        text += f"📅 امروز ({date_str}):\n"
-        today_users = [r for r in results if r[0] == date_str]
-        
-        if today_users:
-            for row in today_users:
-                text += f"👤 {row[1]}: {row[2]} دقیقه\n"
-        else:
-            text += "📭 هیچ رکوردی\n"
-        
-        text += f"\n📅 دیروز ({yesterday}):\n"
-        yesterday_users = [r for r in results if r[0] == yesterday]
-        
-        if yesterday_users:
-            for row in yesterday_users:
-                text += f"👤 {row[1]}: {row[2]} دقیقه\n"
-        else:
-            text += "📭 هیچ رکوردی\n"
-        
-        # همچنین آمار از study_sessions
-        query_sessions = """
-        SELECT date, COUNT(*), SUM(minutes)
-        FROM study_sessions 
-        WHERE completed = TRUE AND date LIKE '2025-12-%'
-        GROUP BY date
-        ORDER BY date DESC
-        LIMIT 5
-        """
-        sessions_stats = db.execute_query(query_sessions, fetchall=True)
-        
-        text += f"\n📋 آمار جلسات ۵ روز اخیر:\n"
-        if sessions_stats:
-            for date, count, total in sessions_stats:
-                text += f"📅 {date}: {count} جلسه، {total or 0} دقیقه\n"
-        
-        await update.message.reply_text(text)
-        
-    except Exception as e:
-        logger.error(f"خطا در بررسی آمار daily_rankings: {e}")
-        await update.message.reply_text(f"❌ خطا: {e}")
-
-def check_report_sent_today(user_id: int, report_type: str) -> bool:
-    """بررسی آیا گزارش امروز ارسال شده است"""
-    try:
-        date_str, _ = get_iran_time()
-        
-        if report_type == "midday":
-            field = "received_midday_report"
-        elif report_type == "night":
-            field = "received_night_report"
-        else:
-            return True  # اگر نوع ناشناخته، ارسال نکن
-        
-        query = f"""
-        SELECT {field} FROM user_activities
-        WHERE user_id = %s AND date = %s
-        """
-        
-        result = db.execute_query(query, (user_id, date_str), fetch=True)
-        
-        if result and result[0]:
-            return True
-        
-        return False
-        
-    except Exception as e:
-        logger.error(f"خطا در بررسی گزارش ارسال شده: {e}")
-        return False  # اگر خطا، ارسال کن
-def create_half_coupon(user_id: int, source: str = "encouragement") -> Optional[Dict]:
-    """ایجاد کوپن ۲۰,۰۰۰ تومانی (نیم‌کوپن)"""
-    try:
-        date_str, time_str = get_iran_time()
-        coupon_code = generate_coupon_code(user_id)
-        
-        query = """
-        INSERT INTO coupons (user_id, coupon_code, coupon_source, value, 
-                           earned_date, status, verified_by_admin, is_half_coupon)
-        VALUES (%s, %s, %s, %s, %s, 'active', TRUE, TRUE)
-        RETURNING coupon_id, coupon_code, earned_date, value
-        """
-        
-        result = db.execute_query(query, 
-            (user_id, coupon_code, source, 20000, date_str), fetch=True)
-        
-        if result:
-            return {
-                "coupon_id": result[0],
-                "coupon_code": result[1],
-                "earned_date": result[2],
-                "value": result[3] if len(result) > 3 else 20000,
-                "is_half_coupon": True,
-                "source": source
-            }
-        return None
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در ایجاد نیم‌کوپن: {e}")
-        return None
-def combine_half_coupons(user_id: int, coupon_code1: str, coupon_code2: str) -> Optional[str]:
-    """ترکیب دو نیم‌کوپن برای ساخت یک کوپن کامل"""
-    conn = None
-    cursor = None
-    
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        # بررسی کوپن‌ها
-        cursor.execute("""
-        SELECT coupon_id, coupon_code, status, is_half_coupon, user_id
-        FROM coupons 
-        WHERE coupon_code IN (%s, %s) AND status = 'active'
-        """, (coupon_code1, coupon_code2))
-        
-        coupons = cursor.fetchall()
-        
-        if len(coupons) != 2:
-            logger.error(f"❌ کوپن‌ها معتبر نیستند")
-            return None
-        
-        # بررسی مالکیت و نوع کوپن‌ها
-        for coupon in coupons:
-            if coupon[4] != user_id:
-                logger.error(f"❌ کوپن {coupon[1]} متعلق به کاربر نیست")
-                return None
-            if not coupon[3]:  # اگر نیم‌کوپن نباشد
-                logger.error(f"❌ کوپن {coupon[1]} نیم‌کوپن نیست")
-                return None
-        
-        # ایجاد کوپن کامل جدید
-        date_str, time_str = get_iran_time()
-        full_coupon_code = generate_coupon_code(user_id)
-        
-        cursor.execute("""
-        INSERT INTO coupons (user_id, coupon_code, coupon_source, value, 
-                           earned_date, status, verified_by_admin, is_half_coupon)
-        VALUES (%s, %s, %s, %s, %s, 'active', TRUE, FALSE)
-        RETURNING coupon_id
-        """, (user_id, full_coupon_code, "combined", 40000, date_str))
-        
-        full_coupon_id = cursor.fetchone()[0]
-        
-        # غیرفعال کردن نیم‌کوپن‌ها و ثبت رابطه
-        for coupon in coupons:
-            cursor.execute("""
-            UPDATE coupons 
-            SET status = 'combined', 
-                parent_coupon_id = %s,
-                used_date = %s
-            WHERE coupon_id = %s
-            """, (full_coupon_id, date_str, coupon[0]))
-        
-        conn.commit()
-        logger.info(f"✅ نیم‌کوپن‌ها ترکیب شدند: {coupon_code1} + {coupon_code2} = {full_coupon_code}")
-        
-        return full_coupon_code
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در ترکیب نیم‌کوپن‌ها: {e}", exc_info=True)
-        if conn:
-            conn.rollback()
-        return None
-        
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            db.return_connection(conn)
-async def combine_coupons_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ترکیب دو نیم‌کوپن"""
-    user_id = update.effective_user.id
-    
-    if len(context.args) != 2:
-        await update.message.reply_text(
-            "🔄 <b>ترکیب نیم‌کوپن‌ها</b>\n\n"
-            "📋 فرمت صحیح:\n"
-            "<code>/combine_coupons کد_نیم‌کوپن_اول کد_نیم‌کوپن_دوم</code>\n\n"
-            "مثال:\n"
-            "<code>/combine_coupons FT123ABC FT456DEF</code>\n\n"
-            "💡 هر نیم‌کوپن: ۲۰,۰۰۰ تومان\n"
-            "✅ پس از ترکیب: ۱ کوپن کامل ۴۰,۰۰۰ تومانی",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    
-    coupon_code1 = context.args[0].upper()
-    coupon_code2 = context.args[1].upper()
-    
-    full_coupon = combine_half_coupons(user_id, coupon_code1, coupon_code2)
-    
-    if full_coupon:
-        await update.message.reply_text(
-            f"✅ <b>ترکیب موفق!</b>\n\n"
-            f"🎫 <b>کوپن کامل جدید:</b> <code>{full_coupon}</code>\n"
-            f"💰 <b>ارزش:</b> ۴۰,۰۰۰ تومان\n\n"
-            f"🎯 اکنون می‌توانید از این کوپن برای خدمات مختلف استفاده کنید!",
-            parse_mode=ParseMode.HTML
-        )
-    else:
-        await update.message.reply_text(
-            "❌ <b>ترکیب ناموفق!</b>\n\n"
-            "ممکن است:\n"
-            "• کوپن‌ها معتبر نباشند\n"
-            "• قبلاً استفاده شده‌اند\n"
-            "• متعلق به شما نیستند\n"
-            "• نیم‌کوپن نیستند",
-            parse_mode=ParseMode.HTML
-        )
-async def my_coupons_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش کوپن‌های کاربر با تفکیک نوع"""
-    user_id = update.effective_user.id
-    
-    try:
-        # دریافت همه کوپن‌های کاربر
-        query = """
-        SELECT coupon_code, coupon_source, value, status, 
-               earned_date, used_date, used_for, is_half_coupon
-        FROM coupons
-        WHERE user_id = %s
-        ORDER BY earned_date DESC
-        """
-        
-        results = db.execute_query(query, (user_id,), fetchall=True)
-        
-        if not results:
-            await update.message.reply_text(
-                "📭 شما هیچ کوپنی ندارید.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-        
-        half_coupons = []
-        full_coupons = []
-        
-        for row in results:
-            coupon_data = {
-                "code": row[0],
-                "source": row[1],
-                "value": row[2],
-                "status": row[3],
-                "earned_date": row[4],
-                "used_date": row[5],
-                "used_for": row[6],
-                "is_half": row[7]
-            }
-            
-            if row[7]:  # is_half_coupon
-                half_coupons.append(coupon_data)
-            else:
-                full_coupons.append(coupon_data)
-        
-        # ساخت پیام
-        text = "🎫 <b>کوپن‌های شما</b>\n\n"
-        
-        if half_coupons:
-            text += "🟡 <b>نیم‌کوپن‌ها (۲۰,۰۰۰ تومان):</b>\n"
-            for i, coupon in enumerate(half_coupons[:5], 1):
-                if coupon["status"] == "active":
-                    text += f"{i}. <code>{coupon['code']}</code> - {coupon['earned_date']}\n"
-            
-            if len(half_coupons) >= 2:
-                text += f"\n🔄 <b>شما {len(half_coupons)} نیم‌کوپن دارید!</b>\n"
-                text += f"می‌توانید ۲ تا را ترکیب کنید:\n"
-                text += f"<code>/combine_coupons {half_coupons[0]['code']} {half_coupons[1]['code']}</code>\n"
-        
-        if full_coupons:
-            text += "\n🟢 <b>کوپن‌های کامل (۴۰,۰۰۰ تومان):</b>\n"
-            for i, coupon in enumerate(full_coupons[:5], 1):
-                status_emoji = "✅" if coupon["status"] == "active" else "📝"
-                text += f"{i}. {status_emoji} <code>{coupon['code']}</code> - {coupon['earned_date']}\n"
-                if coupon["status"] == "used":
-                    text += f"   📍 استفاده شده برای: {coupon['used_for'] or 'نامشخص'}\n"
-        
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-        
-    except Exception as e:
-        logger.error(f"خطا در نمایش کوپن‌ها: {e}")
-        await update.message.reply_text("❌ خطا در دریافت اطلاعات کوپن‌ها.")
-async def send_random_encouragement(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال پیام تشویقی رندوم به کاربران بی‌فعال"""
-    try:
-        logger.info("🎁 شروع ارسال پیام‌های تشویقی...")
-        
-        # دریافت کاربران بی‌فعال امروز
-        inactive_users = get_inactive_users_today()
-        
-        if not inactive_users:
-            logger.info("📭 هیچ کاربر بی‌فعالی وجود ندارد")
-            return
-        
-        # انتخاب حداکثر 20 کاربر به صورت رندوم
-        import random
-        selected_users = random.sample(inactive_users, min(20, len(inactive_users)))
-        
-        total_sent = 0
-        
-        for user in selected_users:
-            try:
-                # ساخت پیام تشویقی
-                encouragement_messages = [
-                    "🎁 <b>فرصت ویژه!</b>\n\nسلام! می‌دونم امروز هنوز مطالعه‌ای ثبت نکردی...\n\n⏰ اگه همین الان یک جلسه مطالعه ثبت کنی:\n✅ <b>نیم کوپن به ارزش ۲۰,۰۰۰ تومان میگیری!</b>\n🎯 شانس برنده شدن در قرعه‌کشی هفتگی بیشتر می‌شه\n📈 رتبه‌ت در جدول هفتگی بهبود پیدا می‌کنه\n\n🔥 <b>همین الان دکمه «➕ ثبت مطالعه» رو بزن!</b>\n\n⏳ این پیشنهاد فقط امروز معتبره!",
-                    
-                    "🔥 <b>آخرین فرصت امروز!</b>\n\nهنوز امروز رو به پایان نرسوندی! یه فرصت طلایی داری:\n\n💰 <b>ثبت مطالعه = دریافت ۲۰,۰۰۰ تومان تخفیف!</b>\n\n⏰ فقط کافیه یک جلسه ۳۰ دقیقه‌ای شروع کنی و:\n✅ کوپن تخفیف ۲۰,۰۰۰ تومانی دریافت کنی\n✅ در قرعه‌کشی هفتگی شرکت کنی\n✅ رتبه‌ت رو در جدول هفتگی بالا ببری\n\n🎯 <b>همین الان شروع کن!</b>",
-                    
-                    "💎 <b>پیشنهاد محدود!</b>\n\nامروز رو بدون مطالعه نگذار بگذره! این فرصت رو از دست نده:\n\n🎁 <b>هر مطالعه امروز = نیم کوپن ۲۰,۰۰۰ تومانی</b>\n\n📊 آمار کاربرانی که امروز مطالعه کردن:\n• ۷۵٪ بیشتر از ۶۰ دقیقه مطالعه کردن\n• ۴۰٪ جایگاهشون در جدول هفتگی بهتر شده\n• ۲۵٪ برنده جوایز هفتگی شدن\n\n🏆 <b>تو هم می‌تونی یکی از برندگان باشی!</b>"
-                ]
-                
-                message = random.choice(encouragement_messages)
-                
-                # ارسال پیام
-                await context.bot.send_message(
-                    user["user_id"],
-                    message,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=get_main_menu_keyboard()
-                )
-                
-                # علامت‌گذاری ارسال شده
-                mark_encouragement_sent(user["user_id"])
-                total_sent += 1
-                
-                await asyncio.sleep(0.15)  # تأخیر بیشتر برای جلوگیری از محدودیت
-                
-            except Exception as e:
-                logger.error(f"خطا در ارسال پیام تشویقی به کاربر {user['user_id']}: {e}")
-                continue
-        
-        logger.info(f"🎁 پیام تشویقی به {total_sent} کاربر ارسال شد")
-        
-    except Exception as e:
-        logger.error(f"خطا در ارسال پیام‌های تشویقی: {e}")
-
-async def check_and_reward_user(user_id: int, session_id: int, context: ContextTypes.DEFAULT_TYPE = None) -> None:
-    """بررسی و اعطای پاداش نیم‌کوپن - فرصت ۲۴ ساعته"""
-    try:
-        now = datetime.now(IRAN_TZ)
-        
-        # بررسی آیا در ۲۴ ساعت گذشته پیام تشویقی دریافت کرده
-        # 🔴 تغییر: بررسی بازه ۲۴ ساعت گذشته
-        query = """
-        SELECT MIN(date) as first_encouragement_date 
-        FROM user_activities 
-        WHERE user_id = %s 
-        AND received_encouragement = TRUE
-        AND created_at >= %s
-        """
-        
-        # تاریخ ۲۴ ساعت پیش
-        twenty_four_hours_ago = now - timedelta(hours=24)
-        check_time = twenty_four_hours_ago.strftime("%Y-%m-%d %H:%M:%S")
-        
-        result = db.execute_query(query, (user_id, check_time), fetch=True)
-        
-        if result and result[0]:  # اگر در ۲۴ ساعت گذشته پیام تشویقی گرفته
-            # ایجاد نیم‌کوپن پاداش
-            coupon = create_half_coupon(user_id, "encouragement_reward")
-            
-            if coupon:
-                # ارسال پیام تبریک
-                if context:
-                    try:
-                        await context.bot.send_message(
-                            user_id,
-                            f"🎉 <b>پاداش ۲۴ ساعته دریافت شد!</b>\n\n"
-                            f"✅ شما برای ثبت مطالعه در عرض ۲۴ ساعت بعد از دریافت پیام تشویقی، پاداش گرفتید!\n\n"
-                            f"⏳ <b>فرصت:</b> ۲۴ ساعت از لحظه دریافت پیام\n"
-                            f"🎁 <b>نیم‌کوپن:</b> <code>{coupon['coupon_code']}</code>\n"
-                            f"💰 <b>مبلغ:</b> ۲۰,۰۰۰ تومان\n"
-                            f"📅 <b>تاریخ ایجاد:</b> {coupon['earned_date']}\n\n"
-                            f"💡 <b>نکته مهم:</b>\n"
-                            f"• این یک <b>نیم‌کوپن</b> است\n"
-                            f"• نیاز به ۲ نیم‌کوپن برای یک خدمت کامل دارید\n"
-                            f"• می‌توانید آن را با نیم‌کوپن دیگر ترکیب کنید\n\n"
-                            f"🔄 <b>برای ترکیب:</b>\n"
-                            f"دستور: /combine_coupons کد۱ کد۲\n\n"
-                            f"✅ نیم‌کوپن‌های شما: /my_coupons",
-                            parse_mode=ParseMode.HTML
-                        )
-                    except Exception as e:
-                        logger.error(f"خطا در اطلاع پاداش به کاربر {user_id}: {e}")
-                
-                logger.info(f"🎁 نیم‌کوپن به کاربر {user_id} داده شد: {coupon['coupon_code']}")
-                
-                # پاک کردن تمام پیام‌های تشویقی قبلی کاربر
-                cleanup_query = """
-                UPDATE user_activities
-                SET received_encouragement = FALSE
-                WHERE user_id = %s
-                """
-                db.execute_query(cleanup_query, (user_id,))
-        
-    except Exception as e:
-        logger.error(f"خطا در بررسی و اعطای پاداش: {e}")
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """دستور /start"""
-    user = update.effective_user
-    user_id = user.id
-    
-    # بررسی پارامتر لینک
-    if context.args and context.args[0] == "special":
-        # ارسال عکس و متن تبلیغی مخصوص
-        photo_url = "https://github.com/Mostafafar/Focustodo/blob/main/welcome.jpg?raw=true"
-        
-        try:
-            await update.message.reply_photo(
-                photo=photo_url,
-                caption="💎 **پیشنهاد محدود!**\n\n"
-                       "امروز رو بدون مطالعه نگذار بگذره! این فرصت رو از دست نده:\n\n"
-                       "🎁 **هر مطالعه امروز = نیم کوپن ۲۰,۰۰۰ تومانی**\n\n"
-                       "📊 آمار کاربرانی که امروز مطالعه کردن:\n"
-                       "• ۷۵٪ بیشتر از ۶۰ دقیقه مطالعه کردن\n"
-                       "• ۴۰٪ جایگاهشون در جدول هفتگی بهتر شده\n"
-                       "• ۲۵٪ برنده جوایز هفتگی شدن\n\n"
-                       "🏆 **تو هم می‌تونی یکی از برندگان باشی!**\n\n"
-                       "🔥 همین الان شروع کن!",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=get_main_menu_keyboard()
-            )
-            return  # بعد از نمایش پیام تبلیغاتی، خروج کن
-        except Exception as e:
-            logger.error(f"خطا در ارسال عکس: {e}")
-            # اگر ارسال عکس خطا خورد، فقط متن را بفرست
-            await update.message.reply_text(
-                "💎 **پیشنهاد محدود!**\n\n"
-                "امروز رو بدون مطالعه نگذار بگذره! این فرصت رو از دست نده:\n\n"
-                "🎁 **هر مطالعه امروز = نیم کوپن ۲۰,۰۰۰ تومانی**\n\n"
-                "📊 آمار کاربرانی که امروز مطالعه کردن:\n"
-                "• ۷۵٪ بیشتر از ۶۰ دقیقه مطالعه کردن\n"
-                "• ۴۰٪ جایگاهشون در جدول هفتگی بهتر شده\n"
-                "• ۲۵٪ برنده جوایز هفتگی شدن\n\n"
-                "🏆 **تو هم می‌تونی یکی از برندگان باشی!**\n\n"
-                "🔥 همین الان شروع کن!",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=get_main_menu_keyboard()
-            )
-            return
-    
-    # ادامه کد قبلی...
-    
-    
-    # بقیه کد بدون تغییر...
-    
-    logger.info(f"🔍 بررسی کاربر {user_id} در دیتابیس...")
-    
-    query = "SELECT user_id, is_active FROM users WHERE user_id = %s"
-    result = db.execute_query(query, (user_id,), fetch=True)
-    
-    if not result:
-        logger.info(f"📝 کاربر جدید {user_id} - شروع فرآیند ثبت‌نام")
-        context.user_data["registration_step"] = "grade"
-        
-        # ارسال اطلاع به ادمین‌ها
-        await notify_admin_new_user(context, user)
-        
-        await update.message.reply_text(
-            "👋 به ربات کمپ خوش آمدید!\n\n"
-            "📝 برای استفاده از ربات، ابتدا باید ثبت‌نام کنید.\n\n"
-            "🎓 **لطفا پایه تحصیلی خود را انتخاب کنید:**",
-            reply_markup=get_grade_keyboard()
-        )
-        return
-    
-    is_active = result[1]
-    if not is_active:
-        await update.message.reply_text(
-            "⏳ حساب کاربری شما در حال بررسی است.\n"
-            "لطفا منتظر تأیید ادمین باشید.\n\n"
-            "🔔 پس از تأیید، می‌توانید از ربات استفاده کنید."
-        )
-        return
-    
-    await update.message.reply_text(
-        "🎯 به کمپ خوش آمدید!\n\n"
-        "📚 سیستم مدیریت مطالعه و رقابت سالم\n"
-        "⏰ تایمر هوشمند | 🏆 رتبه‌بندی آنلاین\n"
-        "📖 منابع شخصی‌سازی شده\n\n"
-        "لطفا یک گزینه انتخاب کنید:",
-        reply_markup=get_main_menu_keyboard()
-    )
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """دستور /admin (فقط برای ادمین‌ها)"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    context.user_data["admin_mode"] = True
-    await update.message.reply_text(
-        "👨‍💼 پنل مدیریت\n"
-        "لطفا یک عملیات انتخاب کنید:",
-        reply_markup=get_admin_keyboard_reply()
-    )
-async def notify_admin_new_user(context: ContextTypes.DEFAULT_TYPE, user: Any) -> None:
-    """ارسال اطلاع کاربر جدید به ادمین‌ها"""
-    try:
-        date_str, time_str = get_iran_time()
-        
-        message = f"👤 **کاربر جدید /start زده**\n\n"
-        message += f"🆔 آیدی عددی: `{user.id}`\n"
-        message += f"👤 نام: {user.full_name or 'نامشخص'}\n"
-        message += f"📛 نام کاربری: @{user.username or 'ندارد'}\n"
-        message += f"📅 تاریخ: {date_str}\n"
-        message += f"🕒 زمان: {time_str}\n\n"
-        message += f"✅ منتظر ثبت‌نام است."
-        
-        for admin_id in ADMIN_IDS:
-            try:
-                await context.bot.send_message(
-                    admin_id,
-                    message,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                await asyncio.sleep(0.1)
-            except Exception as e:
-                logger.error(f"خطا در ارسال به ادمین {admin_id}: {e}")
-                
-    except Exception as e:
-        logger.error(f"خطا در اطلاع‌رسانی به ادمین‌ها: {e}")
-async def deactive_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """غیرفعال‌سازی کاربر توسط ادمین"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ فرمت صحیح:\n"
-            "/deactive <آیدی_کاربر>\n\n"
-            "مثال:\n"
-            "/deactive 123456789\n\n"
-            "📌 آیدی کاربر را می‌توانید از لیست کاربران (/users) دریافت کنید."
-        )
-        return
-    
-    try:
-        target_user_id = int(context.args[0])
-        
-        # بررسی وجود کاربر
-        query = "SELECT username, is_active FROM users WHERE user_id = %s"
-        user_check = db.execute_query(query, (target_user_id,), fetch=True)
-        
-        if not user_check:
-            await update.message.reply_text(f"❌ کاربر با آیدی `{target_user_id}` یافت نشد.")
-            return
-        
-        username, is_currently_active = user_check
-        
-        # اگر کاربر قبلاً غیرفعال است
-        if not is_currently_active:
-            await update.message.reply_text(
-                f"⚠️ کاربر `{target_user_id}` از قبل غیرفعال است.\n"
-                f"👤 نام: {username or 'نامشخص'}"
-            )
-            return
-        
-        # غیرفعال‌سازی
-        query = """
-        UPDATE users
-        SET is_active = FALSE
-        WHERE user_id = %s
-        """
-        rows_updated = db.execute_query(query, (target_user_id,))
-        
-        if rows_updated > 0:
-            date_str, time_str = get_iran_time()
-            
-            # اطلاع به کاربر (اگر امکان داشت)
-            try:
-                await context.bot.send_message(
-                    target_user_id,
-                    "🚫 **حساب کاربری شما غیرفعال شد!**\n\n"
-                    "❌ شما دیگر نمی‌توانید از ربات استفاده کنید.\n"
-                    "📞 برای فعال‌سازی مجدد با پشتیبانی تماس بگیرید."
-                )
-            except Exception as e:
-                logger.warning(f"⚠️ خطا در اطلاع به کاربر {target_user_id}: {e}")
-            
-            await update.message.reply_text(
-                f"✅ کاربر غیرفعال شد!\n\n"
-                f"🆔 آیدی: `{target_user_id}`\n"
-                f"👤 نام: {username or 'نامشخص'}\n"
-                f"📅 تاریخ: {date_str}\n"
-                f"🕒 زمان: {time_str}\n\n"
-                f"🔔 به کاربر اطلاع داده شد (در صورت امکان).",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-            logger.info(f"کاربر غیرفعال شد: {username} ({target_user_id}) توسط ادمین {user_id}")
-        else:
-            await update.message.reply_text(f"❌ خطا در غیرفعال‌سازی کاربر.")
-            
-    except ValueError:
-        await update.message.reply_text("❌ آیدی باید عددی باشد.")
-    except Exception as e:
-        logger.error(f"خطا در غیرفعال‌سازی کاربر: {e}")
-        await update.message.reply_text(f"❌ خطا: {e}")
-
-
-async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """دستور /users - نمایش لیست کاربران"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    try:
-        # دریافت شماره صفحه (اگر وارد شده)
-        page = int(context.args[0]) if context.args else 1
-        page = max(1, page)
-        limit = 8
-        offset = (page - 1) * limit
-        
-        # 🔴 اصلاح شده: حذف کامنت فارسی از کوئری SQL
-        query = """
-        SELECT user_id, username, grade, field, is_active, 
-               registration_date, total_study_time, total_sessions
-        FROM users
-        WHERE is_active = TRUE
-        ORDER BY total_study_time DESC NULLS LAST, user_id DESC
-        LIMIT %s OFFSET %s
-        """
-        
-        results = db.execute_query(query, (limit, offset), fetchall=True)
-        
-        if not results:
-            await update.message.reply_text("📭 هیچ کاربر فعالی وجود ندارد.")
-            return
-        
-        # شمارش کل کاربران فعال
-        count_query = "SELECT COUNT(*) FROM users WHERE is_active = TRUE"
-        total_users = db.execute_query(count_query, fetch=True)[0]
-        total_pages = (total_users + limit - 1) // limit
-        
-        # ساخت متن با HTML
-        text = "<b>📋 رتبه‌بندی کاربران بر اساس مطالعه کلی</b>\n\n"
-        text += f"📊 <b>تعداد کاربران فعال:</b> {total_users}\n"
-        text += f"📄 <b>صفحه {page} از {total_pages}</b>\n\n"
-        
-        for i, row in enumerate(results, 1):
-            user_id_db, username, grade, field, is_active, reg_date, total_time, total_sessions = row
-            
-            # نمایش رتبه در صفحه
-            rank_position = offset + i
-            
-            # ایموجی برای رتبه‌های برتر
-            if rank_position == 1:
-                rank_emoji = "🥇"
-            elif rank_position == 2:
-                rank_emoji = "🥈"
-            elif rank_position == 3:
-                rank_emoji = "🥉"
-            else:
-                rank_emoji = f"{rank_position}."
-            
-            text += f"<b>{rank_emoji} 👤 کاربر</b>\n"
-            text += f"🆔 <code>{user_id_db}</code>\n"
-            text += f"📛 {html.escape(username or 'ندارد')}\n"
-            text += f"🎓 {html.escape(grade)} | 🧪 {html.escape(field)}\n"
-            
-            # نمایش زمان مطالعه با فرمت زیبا
-            if total_time:
-                hours = total_time // 60
-                mins = total_time % 60
-                if hours > 0 and mins > 0:
-                    time_display = f"<b>{hours}h {mins}m</b>"
-                elif hours > 0:
-                    time_display = f"<b>{hours}h</b>"
-                else:
-                    time_display = f"<b>{mins}m</b>"
-                text += f"⏰ <b>کل مطالعه:</b> {time_display}\n"
-                text += f"📖 <b>جلسات:</b> {total_sessions}\n"
-            else:
-                text += f"⏰ <b>کل مطالعه:</b> ۰ دقیقه\n"
-                text += f"📖 <b>جلسات:</b> ۰\n"
-            
-            text += f"📅 <b>ثبت‌نام:</b> {html.escape(reg_date or 'نامشخص')}\n"
-            text += "─" * 15 + "\n"
-        
-        # بررسی طول متن
-        if len(text) > 4000:
-            text = text[:4000] + "\n\n⚠️ <i>(متن برش خورده)</i>"
-        
-        keyboard = []
-        if page > 1:
-            keyboard.append(["◀️ صفحه قبل"])
-        if page < total_pages:
-            keyboard.append(["▶️ صفحه بعد"])
-        keyboard.append(["🔙 بازگشت"])
-        
-        context.user_data["users_page"] = page
-        
-        await update.message.reply_text(
-            text,
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-            parse_mode=ParseMode.HTML
-        )
-        
-    except Exception as e:
-        logger.error(f"خطا در نمایش لیست کاربران: {e}")
-        await update.message.reply_text(f"❌ خطا: {str(e)[:100]}")
-async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """دستور /send - ارسال پیام مستقیم به کاربر"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "⚠️ فرمت صحیح:\n"
-            "/send <آیدی_کاربر> <پیام>\n\n"
-            "مثال:\n"
-            "/send 6680287530 سلام! به ربات خوش آمدید.\n\n"
-            "📌 آیدی کاربر را می‌توانید از لیست کاربران (/users) دریافت کنید."
-        )
-        return
-    
-    try:
-        target_user_id = int(context.args[0])
-        message = " ".join(context.args[1:])
-        
-        # بررسی وجود کاربر
-        query = "SELECT username FROM users WHERE user_id = %s"
-        user_check = db.execute_query(query, (target_user_id,), fetch=True)
-        
-        if not user_check:
-            await update.message.reply_text(f"❌ کاربر با آیدی {target_user_id} یافت نشد.")
-            return
-        
-        username = user_check[0] or "کاربر"
-        
-        # ارسال پیام
-        try:
-            await context.bot.send_message(
-                target_user_id,
-                f"📩 **پیام از مدیریت:**\n\n{message}\n\n👨‍💼 مدیر ربات",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-            # تأیید به ادمین
-            date_str, time_str = get_iran_time()
-            await update.message.reply_text(
-                f"✅ پیام ارسال شد!\n\n"
-                f"👤 گیرنده: {username} (آیدی: `{target_user_id}`)\n"
-                f"📩 پیام: {message[:100]}{'...' if len(message) > 100 else ''}\n"
-                f"📅 تاریخ: {date_str}\n"
-                f"🕒 زمان: {time_str}",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-            # لاگ ارسال پیام
-            logger.info(f"پیام از ادمین {user_id} به کاربر {target_user_id}: {message}")
-            
-        except Exception as e:
-            logger.error(f"خطا در ارسال پیام به کاربر {target_user_id}: {e}")
-            await update.message.reply_text(
-                f"❌ خطا در ارسال پیام!\n"
-                f"کاربر ممکن است ربات را بلاک کرده باشد یا دیگر عضو نباشد."
-            )
-            
-    except ValueError:
-        await update.message.reply_text("❌ آیدی کاربر باید عددی باشد.")
-    except Exception as e:
-        logger.error(f"خطا در دستور /send: {e}")
-        await update.message.reply_text(f"❌ خطا: {e}")
-
-async def active_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """فعال‌سازی کاربر توسط ادمین"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ لطفا آیدی کاربر را وارد کنید:\n"
-            "مثال: /active 123456789"
-        )
-        return
-    
-    try:
-        target_user_id = int(context.args[0])
-        if activate_user(target_user_id):
-            await update.message.reply_text(f"✅ کاربر {target_user_id} فعال شد.")
-        else:
-            await update.message.reply_text("❌ کاربر یافت نشد.")
-    except ValueError:
-        await update.message.reply_text("❌ آیدی باید عددی باشد.")
-
-async def deactive_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """غیرفعال‌سازی کاربر توسط ادمین"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ لطفا آیدی کاربر را وارد کنید:\n"
-            "مثال: /deactive 123456789"
-        )
-        return
-    
-    try:
-        target_user_id = int(context.args[0])
-        if deactivate_user(target_user_id):
-            await update.message.reply_text(f"✅ کاربر {target_user_id} غیرفعال شد.")
-        else:
-            await update.message.reply_text("❌ کاربر یافت نشد.")
-    except ValueError:
-        await update.message.reply_text("❌ آیدی باید عددی باشد.")
-
-async def addfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """افزودن فایل توسط ادمین"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    if len(context.args) < 4:
-        await update.message.reply_text(
-            "⚠️ فرمت صحیح:\n"
-            "/addfile <پایه> <رشته> <درس> <مبحث>\n\n"
-            "مثال:\n"
-            "/addfile دوازدهم تجربی فیزیک دینامیک\n\n"
-            "📝 توضیح اختیاری را در خط بعدی بنویسید."
-        )
-        return
-    
-    grade = context.args[0]
-    field = context.args[1]
-    subject = context.args[2]
-    topic = context.args[3]
-    
-    context.user_data["awaiting_file"] = {
-        "grade": grade,
-        "field": field,
-        "subject": subject,
-        "topic": topic,
-        "description": "",
-        "uploader_id": user_id
-    }
-    
-    await update.message.reply_text(
-        f"📤 آماده آپلود فایل:\n\n"
-        f"🎓 پایه: {grade}\n"
-        f"🧪 رشته: {field}\n"
-        f"📚 درس: {subject}\n"
-        f"🎯 مبحث: {topic}\n\n"
-        f"📝 لطفا توضیحی برای فایل وارد کنید (اختیاری):\n"
-        f"یا برای رد شدن از این مرحله /skip بزنید."
-    )
-
-async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """رد شدن از مرحله"""
-    user_id = update.effective_user.id
-    
-    if context.user_data.get("registration_step") == "message":
-        grade = context.user_data.get("grade")
-        field = context.user_data.get("field")
-        
-        if register_user(user_id, update.effective_user.username, grade, field, ""):
-            await update.message.reply_text(
-                "✅ درخواست شما ثبت شد!\n\n"
-                "📋 اطلاعات ثبت‌نام:\n"
-                f"🎓 پایه: {grade}\n"
-                f"🧪 رشته: {field}\n\n"
-                "⏳ درخواست شما برای ادمین ارسال شد.\n"
-                "پس از تأیید، می‌توانید از ربات استفاده کنید.\n\n"
-                "برای بررسی وضعیت /start را بزنید.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        else:
-            await update.message.reply_text(
-                "❌ خطا در ثبت اطلاعات.\n"
-                "لطفا مجدد تلاش کنید.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        
-        context.user_data.clear()
-        return
-    
-    if not is_admin(user_id) or "awaiting_file" not in context.user_data:
-        await update.message.reply_text("❌ دستور نامعتبر.")
-        return
-    
-    await update.message.reply_text(
-        "✅ مرحله توضیح رد شد.\n"
-        "📎 لطفا فایل را ارسال کنید..."
-    )
-
-async def updateuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بروزرسانی اطلاعات کاربر توسط ادمین"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    if len(context.args) < 3:
-        await update.message.reply_text(
-            "⚠️ فرمت صحیح:\n"
-            "/updateuser <آیدی کاربر> <پایه جدید> <رشته جدید>\n\n"
-            "مثال:\n"
-            "/updateuser 6680287530 دوازدهم تجربی\n\n"
-            "📋 پایه‌های مجاز:\n"
-            "دهم، یازدهم، دوازدهم، فارغ‌التحصیل، دانشجو\n\n"
-            "📋 رشته‌های مجاز:\n"
-            "تجربی، ریاضی، انسانی، هنر، سایر"
-        )
-        return
-    
-    try:
-        target_user_id = int(context.args[0])
-        new_grade = context.args[1]
-        new_field = context.args[2]
-        
-        valid_grades = ["دهم", "یازدهم", "دوازدهم", "فارغ‌التحصیل", "دانشجو"]
-        valid_fields = ["تجربی", "ریاضی", "انسانی", "هنر", "سایر"]
-        
-        if new_grade not in valid_grades:
-            await update.message.reply_text(
-                f"❌ پایه نامعتبر!\n"
-                f"پایه‌های مجاز: {', '.join(valid_grades)}"
-            )
-            return
-        
-        if new_field not in valid_fields:
-            await update.message.reply_text(
-                f"❌ رشته نامعتبر!\n"
-                f"رشته‌های مجاز: {', '.join(valid_fields)}"
-            )
-            return
-        
-        query = """
-        SELECT username, grade, field 
-        FROM users 
-        WHERE user_id = %s
-        """
-        user_info = db.execute_query(query, (target_user_id,), fetch=True)
-        
-        if not user_info:
-            await update.message.reply_text(
-                f"❌ کاربر با آیدی {target_user_id} یافت نشد."
-            )
-            return
-        
-        username, old_grade, old_field = user_info
-        
-        if update_user_info(target_user_id, new_grade, new_field):
-            
-            try:
-                await context.bot.send_message(
-                    target_user_id,
-                    f"📋 **اطلاعات حساب شما بروزرسانی شد!**\n\n"
-                    f"👤 کاربر: {username}\n"
-                    f"🎓 پایه قبلی: {old_grade} → جدید: {new_grade}\n"
-                    f"🧪 رشته قبلی: {old_field} → جدید: {new_field}\n\n"
-                    f"✅ تغییرات توسط ادمین اعمال شد.\n"
-                    f"فایل‌های در دسترس شما مطابق با پایه و رشته جدید به‌روزرسانی شدند."
-                )
-            except Exception as e:
-                logger.warning(f"⚠️ خطا در اطلاع به کاربر {target_user_id}: {e}")
-            
-            await update.message.reply_text(
-                f"✅ اطلاعات کاربر بروزرسانی شد:\n\n"
-                f"👤 کاربر: {username}\n"
-                f"🆔 آیدی: {target_user_id}\n"
-                f"🎓 پایه: {old_grade} → {new_grade}\n"
-                f"🧪 رشته: {old_field} → {new_field}"
-            )
-        else:
-            await update.message.reply_text(
-                "❌ خطا در بروزرسانی اطلاعات کاربر."
-            )
-        
-    except ValueError:
-        await update.message.reply_text("❌ آیدی کاربر باید عددی باشد.")
-    except Exception as e:
-        logger.error(f"خطا در بروزرسانی کاربر: {e}")
-        await update.message.reply_text(f"❌ خطا: {e}")
-
-async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش اطلاعات کاربر"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ لطفا آیدی کاربر را وارد کنید:\n"
-            "/userinfo <آیدی کاربر>\n\n"
-            "یا بدون آیدی برای مشاهده اطلاعات خودتان:\n"
-            "/userinfo"
-        )
-        return
-    
-    try:
-        target_user_id = int(context.args[0])
-        
-        query = """
-        SELECT user_id, username, grade, field, message, 
-               is_active, registration_date, 
-               total_study_time, total_sessions, created_at
-        FROM users
-        WHERE user_id = %s
-        """
-        user_data = db.execute_query(query, (target_user_id,), fetch=True)
-        
-        if not user_data:
-            await update.message.reply_text(f"❌ کاربر با آیدی {target_user_id} یافت نشد.")
-            return
-        
-        date_str, _ = get_iran_time()
-        query_today = """
-        SELECT total_minutes FROM daily_rankings
-        WHERE user_id = %s AND date = %s
-        """
-        today_stats = db.execute_query(query_today, (target_user_id, date_str), fetch=True)
-        
-        query_sessions = """
-        SELECT subject, topic, minutes, date 
-        FROM study_sessions 
-        WHERE user_id = %s 
-        ORDER BY session_id DESC 
-        LIMIT 3
-        """
-        sessions = db.execute_query(query_sessions, (target_user_id,), fetchall=True)
-        
-        user_id_db, username, grade, field, message, is_active, reg_date, \
-        total_time, total_sessions, created_at = user_data
-        
-        text = f"📋 **اطلاعات کاربر**\n\n"
-        text += f"👤 نام: {username or 'نامشخص'}\n"
-        text += f"🆔 آیدی: `{user_id_db}`\n"
-        text += f"🎓 پایه: {grade or 'نامشخص'}\n"
-        text += f"🧪 رشته: {field or 'نامشخص'}\n"
-        text += f"📅 تاریخ ثبت‌نام: {reg_date or 'نامشخص'}\n"
-        text += f"✅ وضعیت: {'فعال' if is_active else 'غیرفعال'}\n\n"
-        
-        text += f"📊 **آمار کلی:**\n"
-        text += f"⏰ مجموع مطالعه: {format_time(total_time or 0)}\n"
-        text += f"📖 تعداد جلسات: {total_sessions or 0}\n"
-        
-        if today_stats:
-            today_minutes = today_stats[0]
-            text += f"🎯 مطالعه امروز: {format_time(today_minutes)}\n"
-        else:
-            text += f"🎯 مطالعه امروز: ۰ دقیقه\n"
-        
-        if message and message.strip():
-            text += f"\n📝 پیام کاربر:\n`{message[:100]}`\n"
-            if len(message) > 100:
-                text += "...\n"
-        
-        if sessions:
-            text += f"\n📚 **آخرین جلسات:**\n"
-            for i, session in enumerate(sessions, 1):
-                subject, topic, minutes, date = session
-                text += f"{i}. {subject} - {topic[:30]} ({minutes}د) در {date}\n"
-        
-        await update.message.reply_text(
-            text,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-    except ValueError:
-        await update.message.reply_text("❌ آیدی باید عددی باشد.")
-    except Exception as e:
-        logger.error(f"خطا در دریافت اطلاعات کاربر: {e}")
-        await update.message.reply_text(f"❌ خطا: {e}")
-
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال پیام همگانی به همه کاربران"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ فرمت صحیح:\n"
-            "/broadcast <پیام>\n\n"
-            "مثال:\n"
-            "/broadcast اطلاعیه مهم: جلسه فردا لغو شد."
-        )
-        return
-    
-    message = " ".join(context.args)
-    broadcast_message = f"📢 **پیام همگانی از مدیریت:**\n\n{message}"
-    
-    await update.message.reply_text("📤 شروع ارسال پیام به همه کاربران...")
-    
-    await send_to_all_users(context, broadcast_message)
-    
-    await update.message.reply_text("✅ ارسال پیام همگانی تکمیل شد")
-
-async def sendtop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال دستی رتبه‌های برتر (برای تست)"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    await update.message.reply_text("📤 ارسال رتبه‌های برتر...")
-    await send_daily_top_ranks(context)
-    await update.message.reply_text("✅ ارسال تکمیل شد")
-
-async def debug_sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی جلسات مطالعه"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT session_id, user_id, subject, topic, minutes, 
-                   TO_TIMESTAMP(start_time) as start_time, completed
-            FROM study_sessions 
-            ORDER BY session_id DESC 
-            LIMIT 10
-        """)
-        sessions = cursor.fetchall()
-        
-        text = "🔍 آخرین جلسات مطالعه:\n\n"
-        
-        if sessions:
-            for session in sessions:
-                text += f"🆔 {session[0]}\n"
-                text += f"👤 کاربر: {session[1]}\n"
-                text += f"📚 درس: {session[2]}\n"
-                text += f"🎯 مبحث: {session[3]}\n"
-                text += f"⏰ زمان: {session[4]} دقیقه\n"
-                text += f"📅 شروع: {session[5]}\n"
-                text += f"✅ تکمیل: {'بله' if session[6] else 'خیر'}\n"
-                text += "─" * 20 + "\n"
-        else:
-            text += "📭 هیچ جلسه‌ای ثبت نشده\n"
-        
-        cursor.close()
-        db.return_connection(conn)
-        
-        await update.message.reply_text(text)
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ خطا: {e}")
-
-async def debug_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """دستور دیباگ فایل‌ها"""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    all_files = get_all_files()
-    
-    text = f"📊 دیباگ فایل‌ها دیتابیس:\n\n"
-    text += f"📁 تعداد کل فایل‌ها: {len(all_files)}\n\n"
-    
-    if all_files:
-        for file in all_files:
-            text += f"🆔 {file['file_id']}: {file['grade']} {file['field']}\n"
-            text += f"   📚 {file['subject']} - {file['topic']}\n"
-            text += f"   📄 {file['file_name']}\n"
-            text += f"   📦 {file['file_size'] // 1024} KB\n"
-            text += f"   📅 {file['upload_date']}\n"
-            text += f"   📥 {file['download_count']} دانلود\n\n"
-    else:
-        text += "📭 هیچ فایلی در دیتابیس وجود ندارد\n\n"
-    
-    try:
-        query = "SELECT COUNT(*) FROM files"
-        count = db.execute_query(query, fetch=True)
-        text += f"🔢 تعداد رکوردها در جدول files: {count[0] if count else 0}\n"
-        
-        query_structure = """
-        SELECT column_name, data_type 
-        FROM information_schema.columns 
-        WHERE table_name = 'files'
-        """
-        columns = db.execute_query(query_structure, fetchall=True)
-        
-        if columns:
-            text += "\n🗃️ ساختار جدول files:\n"
-            for col in columns:
-                text += f"  • {col[0]}: {col[1]}\n"
-    
-    except Exception as e:
-        text += f"\n❌ خطا در بررسی دیتابیس: {e}"
-    
-    await update.message.reply_text(text)
-
-async def check_database_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی مستقیم دیتابیس"""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    try:
-        query = """
-        SELECT file_id, grade, field, subject, topic, file_name, 
-               upload_date, uploader_id
-        FROM files
-        """
-        
-        results = db.execute_query(query, fetchall=True)
-        
-        if not results:
-            await update.message.reply_text("📭 جدول files خالی است")
-            return
-        
-        text = "📊 رکوردهای جدول files:\n\n"
-        for row in results:
-            text += f"🆔 ID: {row[0]}\n"
-            text += f"🎓 پایه: {row[1]}\n"
-            text += f"🧪 رشته: {row[2]}\n"
-            text += f"📚 درس: {row[3]}\n"
-            text += f"🎯 مبحث: {row[4]}\n"
-            text += f"📄 نام فایل: {row[5]}\n"
-            text += f"📅 تاریخ: {row[6]}\n"
-            text += f"👤 آپلودکننده: {row[7]}\n"
-            text += "─" * 20 + "\n"
-        
-        if len(text) > 4000:
-            text = text[:4000] + "\n... (متن برش خورد)"
-        
-        await update.message.reply_text(text)
-        
-    except Exception as e:
-        logger.error(f"خطا در بررسی دیتابیس: {e}")
-        await update.message.reply_text(f"❌ خطا در بررسی دیتابیس: {e}")
-
-async def debug_user_match_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی تطابق کاربر با فایل‌ها"""
-    if not context.args:
-        target_user_id = update.effective_user.id
-    else:
-        try:
-            target_user_id = int(context.args[0])
-        except ValueError:
-            await update.message.reply_text("❌ آیدی باید عددی باشد.")
-            return
-    
-    user_info = get_user_info(target_user_id)
-    
-    if not user_info:
-        await update.message.reply_text(f"❌ کاربر {target_user_id} یافت نشد.")
-        return
-    
-    grade = user_info["grade"]
-    field = user_info["field"]
-    
-    user_files = get_user_files(target_user_id)
-    all_files = get_all_files()
-    
-    text = f"🔍 تطابق فایل‌ها برای کاربر {target_user_id}:\n\n"
-    text += f"👤 کاربر: {user_info['username']}\n"
-    text += f"🎓 پایه: {grade}\n"
-    text += f"🧪 رشته: {field}\n\n"
-    
-    text += f"📁 فایل‌های مرتبط: {len(user_files)}\n"
-    for f in user_files:
-        text += f"  • {f['file_name']} ({f['subject']})\n"
-    
-    text += f"\n📊 تمام فایل‌های دیتابیس: {len(all_files)}\n"
-    
-    if all_files:
-        for f in all_files:
-            match = f["grade"] == grade and f["field"] == field
-            match_symbol = "✅" if match else "❌"
-            text += f"\n{match_symbol} {f['file_id']}: {f['grade']} {f['field']} - {f['subject']} - {f['file_name']}"
-    
-    await update.message.reply_text(text)
-
-# -----------------------------------------------------------
-# هندلرهای پیام متنی (تمام تعاملات)
-# -----------------------------------------------------------
-
-
-    
-    # مدیریت درخواست‌های ادمین
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پردازش تمام پیام‌های متنی"""
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    
-    logger.info(f"📝 دریافت پیام متنی از کاربر {user_id}: '{text}'")
-    logger.info(f"🔍 وضعیت user_data: {context.user_data}")
-    
-    # منوی اصلی
-    if text == "🏆 رتبه‌بندی":
-        await show_rankings_text(update, context, user_id)
-        return
-        
-    elif text == "📚 منابع":
-        await show_files_menu_text(update, context, user_id)
-        return
-        
-    elif text == "➕ ثبت مطالعه":
-        await start_study_process_text(update, context)
-        return
-        
-    elif text == "🎫 کوپن":
-        await coupon_menu_handler(update, context)
-        return
-        
-    elif text == "🏠 منوی اصلی" or text == "🔙 بازگشت":
-        # پاک کردن تمام حالت‌های مربوط به منابع
-        context.user_data.pop("viewing_files", None)
-        context.user_data.pop("downloading_file", None)
-        context.user_data.pop("last_subject", None)
-        
-        # پاک کردن تمام حالت‌های مربوط به کوپن
-        context.user_data.pop("awaiting_coupon_selection", None)
-        context.user_data.pop("selected_service", None)
-        context.user_data.pop("awaiting_purchase_method", None)
-        context.user_data.pop("awaiting_payment_receipt", None)
-        context.user_data.pop("eligible_for_coupon", None)
-        
-        await show_main_menu_text(update, context)
-        return
-    
-    # ادمین منو
-    elif text == "📤 آپلود فایل":
-        await admin_upload_file(update, context)
-        return
-        
-    elif text == "👥 درخواست‌ها":
-        await admin_show_requests(update, context)
-        return
-        
-    elif text == "📁 مدیریت فایل‌ها":
-        await admin_manage_files(update, context)
-        return
-        
-    elif text == "🎫 مدیریت کوپن":
-        context.user_data["admin_mode"] = True
-        await update.message.reply_text(
-            "🎫 **پنل مدیریت کوپن**\n\n"
-            "لطفا یک عملیات انتخاب کنید:",
-            reply_markup=get_admin_coupon_keyboard()
-        )
-        return
-    
-    elif text == "👤 لیست کاربران":
-        await users_command(update, context)
-        return
-    
-    elif text == "📩 ارسال پیام":
-        await update.message.reply_text(
-            "📩 ارسال پیام مستقیم\n\n"
-            "برای ارسال پیام از دستور زیر استفاده کنید:\n"
-            "/send <آیدی_کاربر> <پیام>\n\n"
-            "مثال:\n"
-            "/send 6680287530 سلام! آزمون فردا لغو شد.\n\n"
-            "📌 آیدی کاربر را از لیست کاربران (/users) دریافت کنید."
-        )
-        return
-        
-    elif text == "📊 آمار ربات":
-        await admin_show_stats(update, context)
-        return
-    
-    elif text == "◀️ صفحه قبل" and context.user_data.get("users_page"):
-        page = context.user_data.get("users_page", 1) - 1
-        if page < 1:
-            page = 1
-        context.args = [str(page)]
-        await users_command(update, context)
-        return
-    
-    elif text == "▶️ صفحه بعد" and context.user_data.get("users_page"):
-        page = context.user_data.get("users_page", 1) + 1
-        context.args = [str(page)]
-        await users_command(update, context)
-        return
-    
-    # مدیریت کوپن ادمین
-    elif text == "📋 درخواست‌های کوپن":
-        await coupon_requests_command(update, context)
-        return
-        
-    elif text == "🏦 تغییر کارت":
-        await update.message.reply_text(
-            "🏦 **تغییر شماره کارت**\n\n"
-            "برای تغییر شماره کارت از دستور زیر استفاده کنید:\n"
-            "/set_card <شماره_کارت> <نام_صاحب_کارت>\n\n"
-            "مثال:\n"
-            "/set_card ۶۰۳۷-۹۹۹۹-۱۲۳۴-۵۶۷۸ علی_محمدی\n\n"
-            "برای مشاهده شماره کارت فعلی: /set_card"
-        )
-        return
-        
-    elif text == "📊 آمار کوپن‌ها":
-        await coupon_stats_command(update, context)
-        return
-    
-    # اتمام مطالعه
-    elif text == "✅ اتمام مطالعه":
-        await complete_study_button(update, context, user_id)
-        return
-    
-    # مدیریت فایل‌های ادمین
-    elif text == "🗑 حذف فایل":
-        await admin_delete_file_prompt(update, context)
-        return
-        
-    elif text == "📋 لیست فایل‌ها":
-        await admin_list_files(update, context)
-        return
-        
-    elif text == "🔄 به‌روزرسانی":
-        if context.user_data.get("admin_mode"):
-            if context.user_data.get("showing_requests"):
-                await admin_show_requests(update, context)
-            elif context.user_data.get("managing_files"):
-                await admin_manage_files(update, context)
-            elif context.user_data.get("showing_stats"):
-                await admin_show_stats(update, context)
-        return
-    
-    # مدیریت درخواست‌های ادمین
-    elif text == "✅ تأیید همه":
-        await admin_approve_all(update, context)
-        return
-        
-    elif text == "❌ رد همه":
-        await admin_reject_all_prompt(update, context)
-        return
-        
-    elif text == "👁 مشاهده جزئیات":
-        await admin_view_request_details_prompt(update, context)
-        return
-    
-    # پس از مطالعه
-    elif text == "📖 منابع این درس":
-        if "last_subject" in context.user_data:
-            await show_subject_files_text(update, context, user_id, context.user_data["last_subject"])
-        else:
-            await update.message.reply_text("❌ درس مشخصی یافت نشد.")
-        return
-        
-    elif text == "➕ مطالعه جدید":
-        await start_study_process_text(update, context)
-        return
-    
-    # خدمات کوپن   
-    elif text in ["📞 تماس تلفنی", "📊 تحلیل گزارش", 
-                  "✏️ تصحیح آزمون", "📈 تحلیل آزمون", 
-                  "📝 آزمون شخصی", "🔗 برنامه شخصی"]:
-        await handle_coupon_service_selection(update, context, text)
-        return
-    
-    # مدیریت کوپن کاربر
-    # در تابع handle_text، بخش خرید کوپن:
-    elif text == "🛒 خرید کوپن" or text == "💳 خرید کوپن":
-        await handle_coupon_purchase(update, context)
-        return
-    # مدیریت کوپن کاربر
-    elif text == "🎫 کوپن‌های من":
-        await show_user_coupons(update, context, user_id)
-        return
-
-# و در بخش پردازش عکس فیش:
-
-        
-    elif text == "📋 درخواست‌های من":
-        await show_user_requests(update, context, user_id)
-        return
-    
-    # روش‌های کسب کوپن
-    elif text == "⏰ کسب از مطالعه":
-        await handle_study_coupon_earning(update, context)
-        return
-        
-    elif text == "💳 خرید کوپن":
-        await handle_coupon_purchase(update, context)
-        return
-    
-    # دریافت کوپن از مطالعه
-    elif text == "✅ دریافت کوپن":
-        if "eligible_for_coupon" in context.user_data:
-            streak_info = context.user_data["eligible_for_coupon"]
-            coupon = award_streak_coupon(user_id, streak_info["streak_id"])
-            
-            if coupon:
-                text = f"""
-🎉 **تبریک! شما یک کوپن کسب کردید!**
-
-📊 عملکرد ۲ روز اخیر شما:
-✅ دیروز: {streak_info['yesterday_minutes'] // 60} ساعت و {streak_info['yesterday_minutes'] % 60} دقیقه
-✅ امروز: {streak_info['today_minutes'] // 60} ساعت و {streak_info['today_minutes'] % 60} دقیقه
-🎯 مجموع: {streak_info['total_hours']} ساعت در ۲ روز
-
-🎫 **کوپن عمومی جدید شما:**
-کد: `{coupon['coupon_code']}`
-ارزش: ۴۰,۰۰۰ تومان
-منبع: کسب از طریق مطالعه
-تاریخ: {coupon['earned_date']}
-
-💡 این کوپن را می‌توانید برای هر خدمتی استفاده کنید!
-
-📋 برای مشاهده کوپن‌ها: «🎫 کوپن‌های من»
-"""
-                await update.message.reply_text(
-                    text,
-                    reply_markup=get_coupon_main_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            else:
-                await update.message.reply_text(
-                    "❌ خطا در ایجاد کوپن. لطفا مجدد تلاش کنید.",
-                    reply_markup=get_coupon_main_keyboard()
-                )
-            
-            context.user_data.pop("eligible_for_coupon", None)
-        return
-    
-    # تأیید عضویت در کانال
-    elif text == "✅ تأیید عضویت":
-        await handle_channel_subscription(update, context, user_id)
-        return
-    
-    # پردازش انتخاب درس
-    if context.user_data.get("downloading_file") and text.startswith("دانلود"):
-        try:
-            file_id = int(text.split(" ")[1])
-            await download_file_text(update, context, user_id, file_id)
-        except:
-            await update.message.reply_text("❌ فرمت نامعتبر.")
-        return
-
-    # پردازش انتخاب درس
-    if text in SUBJECTS:
-        # بررسی اینکه آیا کاربر در حال مشاهده منابع است؟
-        if context.user_data.get("viewing_files"):
-            await show_subject_files_text(update, context, user_id, text)
-            return
-        else:
-            await select_subject_text(update, context, text)
-            return
-    
-    # پردازش انتخاب زمان
-    for display_text, minutes in SUGGESTED_TIMES:
-        if text == display_text:
-            await select_time_text(update, context, minutes)
-            return
-    
-    if text == "✏️ زمان دلخواه":
-        await request_custom_time_text(update, context)
-        return
-    
-    # پردازش وارد کردن کد کوپن برای استفاده
-    # پردازش وارد کردن کد کوپن برای استفاده
-    if context.user_data.get("awaiting_coupon_selection"):
-        await handle_coupon_usage(update, context, user_id, text)
-        return
-    
-    # پردازش فیش پرداختی
-    if context.user_data.get("awaiting_payment_receipt") and text != "🔙 بازگشت":
-        await handle_payment_receipt(update, context, user_id, text)
-        return
-    
-    # ثبت‌نام کاربر جدید
-    if context.user_data.get("registration_step") == "grade":
-        await handle_registration_grade(update, context, text)
-        return
-    
-    if context.user_data.get("registration_step") == "field":
-        await handle_registration_field(update, context, text)
-        return
-    
-    if context.user_data.get("registration_step") == "message":
-        await handle_registration_message(update, context, user_id, text)
-        return
-    
-    # پردازش فایل‌های درس
-    if context.user_data.get("viewing_files") and text != "🔙 بازگشت":
-        await show_subject_files_text(update, context, user_id, text)
-        return
-    
-    # مدیریت ادمین
-    if context.user_data.get("awaiting_file_id_to_delete"):
-        await admin_delete_file_process(update, context, text)
-        return
-    
-    if context.user_data.get("awaiting_request_id"):
-        await admin_view_request_details(update, context, text)
-        return
-    
-    if context.user_data.get("rejecting_all"):
-        await admin_reject_all_process(update, context, text)
-        return
-    
-    # سایر موارد
-    if context.user_data.get("awaiting_custom_subject"):
-        await handle_custom_subject(update, context, text)
-        return
-    
-    if context.user_data.get("awaiting_topic"):
-        await handle_study_topic(update, context, user_id, text)
-        return
-    
-    if context.user_data.get("awaiting_custom_time"):
-        await handle_custom_time(update, context, text)
-        return
-    
-    if context.user_data.get("awaiting_file_description"):
-        await handle_file_description(update, context, text)
-        return
-    
-    if context.user_data.get("rejecting_request"):
-        await handle_reject_request(update, context, text)
-        return
-    
-    if context.user_data.get("awaiting_user_grade"):
-        await handle_user_update_grade(update, context, text)
-        return
-    
-    if context.user_data.get("awaiting_user_field"):
-        await handle_user_update_field(update, context, text)
-        return
-    
-    # پیام پیش‌فرض
-    await update.message.reply_text(
-        "لطفا از منوی ربات استفاده کنید.",
-        reply_markup=get_main_menu_keyboard()
-        )
-async def handle_coupon_usage(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, text: str) -> None:
-    """پردازش استفاده از کوپن"""
-    logger.info(f"🔍 پردازش استفاده از کوپن: کاربر {user_id}، متن: {text}")
-    
-    if text == "🔙 بازگشت":
-        context.user_data.pop("awaiting_coupon_selection", None)
-        context.user_data.pop("selected_service", None)
-        await coupon_menu_handler(update, context)
-        return
-    
-    # بررسی کد کوپن
-    coupon_code = text.strip().upper()
-    
-    # اگر کاربر چند کوپن وارد کرده (برای خدمت‌هایی که نیاز به چند کوپن دارند)
-    if "," in coupon_code:
-        coupon_codes = [code.strip().upper() for code in coupon_code.split(",")]
-    else:
-        coupon_codes = [coupon_code]
-    
-    logger.info(f"🔍 کدهای کوپن وارد شده: {coupon_codes}")
-    
-    # دریافت اطلاعات خدمت انتخاب شده
-    service_info = context.user_data.get("selected_service")
-    if not service_info:
-        await update.message.reply_text(
-            "❌ اطلاعات خدمت یافت نشد. لطفا مجدد تلاش کنید.",
-            reply_markup=get_coupon_main_keyboard()
-        )
-        return
-    
-    # بررسی تعداد کوپن‌های لازم
-    if len(coupon_codes) != service_info["price"]:
-        await update.message.reply_text(
-            f"❌ تعداد کوپن نامعتبر!\n\n"
-            f"برای {service_info['name']} نیاز به {service_info['price']} کوپن دارید.\n"
-            f"شما {len(coupon_codes)} کوپن وارد کردید.",
-            reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True)
-        )
-        return
-    
-    # بررسی اعتبار هر کوپن
-    valid_coupons = []
-    invalid_coupons = []
-    
-    for code in coupon_codes:
-        coupon = get_coupon_by_code(code)
-        
-        if not coupon:
-            invalid_coupons.append(f"{code} (پیدا نشد)")
-        elif coupon["status"] != "active":
-            invalid_coupons.append(f"{code} (وضعیت: {coupon['status']})")
-        elif coupon["user_id"] != user_id:
-            invalid_coupons.append(f"{code} (متعلق به شما نیست)")
-        else:
-            valid_coupons.append(coupon)
-    
-    if invalid_coupons:
-        error_text = "❌ کوپن‌های نامعتبر:\n"
-        for invalid in invalid_coupons:
-            error_text += f"• {invalid}\n"
-        
-        await update.message.reply_text(
-            error_text + "\nلطفا کدهای صحیح را وارد کنید:",
-            reply_markup=ReplyKeyboardMarkup([["🔙 بازگشت"]], resize_keyboard=True)
-        )
-        return
-    
-    # استفاده از کوپن‌ها و ثبت درخواست
-    try:
-        # استفاده از کوپن‌ها
-        for coupon in valid_coupons:
-            if not use_coupon(coupon["coupon_code"], service_info["name"]):
-                logger.error(f"❌ خطا در استفاده از کوپن {coupon['coupon_code']}")
-                await update.message.reply_text(
-                    f"❌ خطا در استفاده از کوپن {coupon['coupon_code']}",
-                    reply_markup=get_coupon_main_keyboard()
-                )
-                return
-        
-        # ایجاد درخواست استفاده از کوپن
-        coupon_codes_str = ",".join([c["coupon_code"] for c in valid_coupons])
-        
-        request_data = create_coupon_request(
-            user_id=user_id,
-            request_type="usage",
-            service_type=get_service_type_key(service_info["name"]),
-            amount=0,  # چون با کوپن پرداخت شده
-            receipt_image=None
-        )
-        
-        if not request_data:
-            await update.message.reply_text(
-                "❌ خطا در ثبت درخواست. لطفا با پشتیبانی تماس بگیرید.",
-                reply_markup=get_coupon_main_keyboard()
-            )
-            return
-        
-        date_str, time_str = get_iran_time()
-        
-        # نمایش موفقیت
-        text = f"""
-✅ **درخواست شما ثبت شد!**
-
-🎯 خدمت: {service_info['name']}
-💰 روش پرداخت: {len(valid_coupons)} کوپن
-🎫 کدهای استفاده شده: {coupon_codes_str}
-📅 تاریخ: {date_str}
-🕒 زمان: {time_str}
-
-⏳ درخواست شما برای بررسی به ادمین ارسال شد.
-پس از تأیید، با شما تماس گرفته می‌شود.
-
-📋 شماره درخواست: #{request_data['request_id']}
-"""
-        
-        await update.message.reply_text(
-            text,
-            reply_markup=get_coupon_main_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        # ارسال اطلاع به ادمین‌ها
-        user_info = get_user_info(user_id)
-        username = user_info["username"] if user_info else "نامشخص"
-        user_full_name = update.effective_user.full_name or "نامشخص"
-        
-        for admin_id in ADMIN_IDS:
-            try:
-                admin_text = f"""
-🎫 **درخواست جدید استفاده از کوپن**
-
-📋 **اطلاعات درخواست:**
-• شماره درخواست: #{request_data['request_id']}
-• کاربر: {escape_html_for_telegram(user_full_name)}
-• آیدی: `{user_id}`
-• نام کاربری: @{username or 'ندارد'}
-• خدمت: {service_info['name']}
-• کدهای کوپن: {coupon_codes_str}
-• تاریخ: {date_str}
-• زمان: {time_str}
-
-📝 برای تأیید دستور زیر را وارد کنید:
-<code>/verify_coupon {request_data['request_id']}</code>
-"""
-                
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=admin_text,
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception as e:
-                logger.error(f"خطا در ارسال به ادمین {admin_id}: {e}")
-        
-        # پاک کردن حالت‌ها
-        context.user_data.pop("awaiting_coupon_selection", None)
-        context.user_data.pop("selected_service", None)
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در پردازش استفاده از کوپن: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ خطا در پردازش درخواست. لطفا مجدد تلاش کنید.",
-            reply_markup=get_coupon_main_keyboard()
-        )
-
-def get_service_type_key(service_name: str) -> str:
-    """تبدیل نام خدمت به کلید"""
-    service_map = {
-        "تماس تلفنی": "call",
-        "تحلیل گزارش کار": "analysis",
-        "تصحیح آزمون تشریحی": "correction",
-        "تحلیل آزمون": "test_analysis",
-        "آزمون شخصی": "exam"
-    }
-    return service_map.get(service_name, service_name.lower())
-
-async def switch_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
-                     message: str, reply_markup: ReplyKeyboardMarkup) -> None:
-    """تغییر منو با انیمیشن و حذف کیبورد قدیمی"""
-    # ارسال انیمیشن تایپ
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id, 
-        action="typing"
-    )
-    
-    # حذف کیبورد قدیمی (اگر پیام از کاربر است)
-    if update.message:
-        try:
-            await update.message.reply_text(
-                "🔄",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        except:
-            pass
-    
-    await asyncio.sleep(0.15)  # تأخیر بسیار کوتاه
-    
-    # نمایش منوی جدید
-    await update.message.reply_text(
-        message,
-        reply_markup=reply_markup
-    )
-
-# -----------------------------------------------------------
-# توابع کمکی برای هندلرهای متن
-# -----------------------------------------------------------
-
-async def show_main_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش منوی اصلی"""
-    await update.message.reply_text(
-        "🎯 به Focus Todo خوش آمدید!\n\n"
-        "📚 سیستم مدیریت مطالعه و رقابت سالم\n"
-        "⏰ تایمر هوشمند | 🏆 رتبه‌بندی آنلاین\n"
-        "📖 منابع شخصی‌سازی شده\n\n"
-        "لطفا یک گزینه انتخاب کنید:",
-        reply_markup=get_main_menu_keyboard()
-    )
-
-async def show_rankings_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
-    """نمایش رتبه‌بندی"""
-    rankings = get_today_rankings()
-    date_str, time_str = get_iran_time()
-    
-    if not rankings:
-        text = f"🏆 جدول برترین‌ها\n\n📅 {date_str}\n🕒 {time_str}\n\n📭 هنوز کسی مطالعه نکرده است!"
-    else:
-        text = f"🏆 جدول برترین‌های امروز\n\n"
-        text += f"📅 {date_str}\n🕒 {time_str}\n\n"
-        
-        medals = ["🥇", "🥈", "🥉"]
-        
-        for i, rank in enumerate(rankings[:3]):
-            if i < 3:
-                medal = medals[i]
-                
-                # تبدیل دقیقه به ساعت و دقیقه
-                hours = rank["total_minutes"] // 60
-                mins = rank["total_minutes"] % 60
-                
-                # فرمت زمان: 2h 30m
-                if hours > 0 and mins > 0:
-                    time_display = f"{hours}h {mins}m"
-                elif hours > 0:
-                    time_display = f"{hours}h"
-                else:
-                    time_display = f"{mins}m"
-                
-                # دریافت نام کامل کاربر از تلگرام
-                try:
-                    # تلاش برای دریافت اطلاعات کاربر
-                    chat_member = await context.bot.get_chat(rank["user_id"])
-                    # استفاده از first_name یا username
-                    if chat_member.first_name:
-                        user_display = chat_member.first_name
-                        if chat_member.last_name:
-                            user_display += f" {chat_member.last_name}"
-                    elif chat_member.username:
-                        user_display = f"@{chat_member.username}"
-                    else:
-                        user_display = rank["username"] or "کاربر"
-                except Exception:
-                    # اگر خطا خورد، از username دیتابیس استفاده کن
-                    user_display = rank["username"] or "کاربر"
-                
-                # اگر None بود
-                if user_display == "None" or not user_display:
-                    user_display = "کاربر"
-                
-                grade_field = f"({rank['grade']} {rank['field']})"
-                
-                if rank["user_id"] == user_id:
-                    text += f"{medal} {user_display} {grade_field}: {time_display} ← **شما**\n"
-                else:
-                    text += f"{medal} {user_display} {grade_field}: {time_display}\n"
-        
-        user_rank, user_minutes = get_user_rank_today(user_id)
-        
-        if user_rank:
-            # تبدیل دقیقه به ساعت و دقیقه برای کاربر
-            hours = user_minutes // 60
-            mins = user_minutes % 60
-            
-            if hours > 0 and mins > 0:
-                user_time_display = f"{hours}h {mins}m"
-            elif hours > 0:
-                user_time_display = f"{hours}h"
-            else:
-                user_time_display = f"{mins}m"
-            
-            if user_rank > 3 and user_minutes > 0:
-                # دریافت نام کاربر جاری
-                try:
-                    chat_member = await context.bot.get_chat(user_id)
-                    if chat_member.first_name:
-                        current_user_display = chat_member.first_name
-                        if chat_member.last_name:
-                            current_user_display += f" {chat_member.last_name}"
-                    elif chat_member.username:
-                        current_user_display = f"@{chat_member.username}"
-                    else:
-                        user_info = get_user_info(user_id)
-                        current_user_display = user_info["username"] if user_info else "شما"
-                except Exception:
-                    user_info = get_user_info(user_id)
-                    current_user_display = user_info["username"] if user_info else "شما"
-                
-                if current_user_display == "None" or not current_user_display:
-                    current_user_display = "شما"
-                    
-                user_info = get_user_info(user_id)
-                grade = user_info["grade"] if user_info else ""
-                field = user_info["field"] if user_info else ""
-                grade_field = f"({grade} {field})" if grade and field else ""
-                
-                text += f"\n📊 موقعیت شما:\n"
-                text += f"🏅 رتبه {user_rank}: {current_user_display} {grade_field}: {user_time_display}\n"
-            
-            elif user_rank <= 3:
-                text += f"\n🎉 آفرین! شما در بین ۳ نفر برتر هستید!\n"
-            else:
-                text += f"\n📊 شروع کنید تا در جدول قرار بگیرید!\n"
-        
-        text += f"\n👥 تعداد کل شرکت‌کنندگان امروز: {len(rankings)} نفر"
-    
-    await update.message.reply_text(
-        text,
-        reply_markup=get_main_menu_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def start_study_process_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """شروع فرآیند ثبت مطالعه"""
-    await update.message.reply_text(
-        "📚 لطفا درس مورد نظر را انتخاب کنید:",
-        reply_markup=get_subjects_keyboard_reply()
-    )
-
-async def show_files_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
-    """نمایش منوی منابع"""
-    user_files = get_user_files(user_id)
-    
-    if not user_files:
-        await update.message.reply_text(
-            "📭 فایلی برای شما موجود نیست.\n"
-            "ادمین به زودی فایل‌های مرتبط را اضافه می‌کند.",
-            reply_markup=get_main_menu_keyboard()
-        )
-        return
-    
-    context.user_data["viewing_files"] = True
-    await update.message.reply_text(
-        "📚 منابع آموزشی شما\n\n"
-        "لطفا درس مورد نظر را انتخاب کنید:",
-        reply_markup=get_file_subjects_keyboard(user_files)
-    )
-
-async def show_subject_files_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, subject: str) -> None:
-    """نمایش فایل‌های یک درس خاص"""
-    files = get_files_by_subject(user_id, subject)
-    context.user_data["last_subject"] = subject
-    context.user_data["viewing_files"] = True
-    
-    if not files:
-        await update.message.reply_text(
-            f"📭 فایلی برای درس {subject} موجود نیست.",
-            reply_markup=get_main_menu_keyboard()
-        )
-        context.user_data.pop("viewing_files", None)
-        return
-    
-    text = f"📚 منابع {subject}\n\n"
-    
-    keyboard = []
-    
-    for i, file in enumerate(files[:5], 1):
-        # تعیین عنوان برای دکمه
-        if file['topic'] and file['topic'].strip():
-            # اگر مبحث وجود دارد، از آن استفاده کن
-            display_title = file['topic']
-        else:
-            # اگر مبحث نداریم، نام فایل بدون پسوند را نمایش بده
-            display_title = os.path.splitext(file['file_name'])[0]
-        
-        # کوتاه کردن عنوان برای نمایش در لیست
-        list_title = display_title[:50] + "..." if len(display_title) > 50 else display_title
-        
-        text += f"{i}. **{list_title}**\n"
-        text += f"   📄 {file['file_name']}\n"
-        
-        if file['description'] and file['description'].strip():
-            desc = file['description'][:50]
-            text += f"   📝 {desc}"
-            if len(file['description']) > 50:
-                text += "..."
-            text += "\n"
-        
-        size_mb = file['file_size'] / (1024 * 1024)
-        text += f"   📦 {size_mb:.1f} MB | 📥 {file['download_count']} بار\n\n"
-        
-        if i <= 3:
-            # ایجاد دکمه با مبحث یا عنوان مناسب
-            # کوتاه کردن عنوان برای دکمه (حداکثر 30 کاراکتر)
-            button_title = display_title[:30] + "..." if len(display_title) > 30 else display_title
-            keyboard.append([f"دانلود {file['file_id']} - {button_title}"])
-    
-    if len(files) > 5:
-        text += f"📊 و {len(files)-5} فایل دیگر...\n"
-    
-    keyboard.append(["🔙 بازگشت"])
-    
-    context.user_data["downloading_file"] = True
-    
-    await update.message.reply_text(
-        text,
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True),
-        parse_mode=ParseMode.MARKDOWN
-    )
-async def download_file_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, file_id: int) -> None:
-    """ارسال فایل به کاربر"""
-    file_data = get_file_by_id(file_id)
-    
-    if not file_data:
-        await update.message.reply_text("❌ فایل یافت نشد.")
-        return
-    
-    user_info = get_user_info(user_id)
-    if not user_info:
-        await update.message.reply_text("❌ دسترسی denied.")
-        return
-    
-    user_grade = user_info["grade"]
-    user_field = user_info["field"]
-    file_grade = file_data["grade"]
-    file_field = file_data["field"]
-    
-    has_access = False
-    
-    if user_field == file_field:
-        if user_grade == file_grade:
-            has_access = True
-        elif user_grade == "فارغ‌التحصیل" and file_grade == "دوازدهم":
-            has_access = True
-    
-    if not has_access:
-        await update.message.reply_text("❌ شما به این فایل دسترسی ندارید.")
-        return
-    
-    try:
-        caption_parts = []
-        caption_parts.append(f"📄 **{file_data['file_name']}**\n")
-        
-        if file_data['topic'] and file_data['topic'].strip():
-            caption_parts.append(f"🎯 مبحث: {file_data['topic']}\n")
-        
-        caption_parts.append(f"📚 درس: {file_data['subject']}\n")
-        caption_parts.append(f"🎓 پایه: {file_data['grade']}\n")
-        caption_parts.append(f"🧪 رشته: {file_data['field']}\n")
-        
-        if file_data['description'] and file_data['description'].strip():
-            caption_parts.append(f"📝 توضیح: {file_data['description']}\n")
-        
-        caption_parts.append(f"📦 حجم: {file_data['file_size'] // 1024} KB\n")
-        caption_parts.append(f"📅 تاریخ آپلود: {file_data['upload_date']}\n\n")
-        caption_parts.append("✅ با موفقیت دانلود شد!")
-        
-        caption = "".join(caption_parts)
-        
-        await update.message.reply_document(
-            document=file_data["telegram_file_id"],
-            caption=caption,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        increment_download_count(file_id)
-        
-        context.user_data.pop("downloading_file", None)
-        context.user_data.pop("viewing_files", None)  # پاک کردن حالت منابع
-        await update.message.reply_text(
-            "✅ فایل ارسال شد!",
-            reply_markup=get_main_menu_keyboard()  # بازگشت به منوی اصلی
-        )
-        
-    except Exception as e:
-        logger.error(f"خطا در ارسال فایل: {e}")
-        await update.message.reply_text("❌ خطا در ارسال فایل.")
-
-async def select_subject_text(update: Update, context: ContextTypes.DEFAULT_TYPE, subject: str) -> None:
-    """ذخیره درس انتخاب شده"""
-    if subject == "سایر":
-        await update.message.reply_text(
-            "📝 لطفا نام درس را وارد کنید:\n"
-            "(مثال: هندسه، علوم کامپیوتر، منطق و ...)"
-        )
-        context.user_data["awaiting_custom_subject"] = True
-        return
-    
-    context.user_data["selected_subject"] = subject
-    
-    await update.message.reply_text(
-        f"⏰ تنظیم تایمر\n\n"
-        f"📝 درس انتخاب شده: **{subject}**\n\n"
-        f"⏱ لطفا مدت زمان مطالعه را انتخاب کنید:\n"
-        f"(حداکثر {MAX_STUDY_TIME//60} ساعت)",
-        reply_markup=get_time_selection_keyboard_reply(),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def select_time_text(update: Update, context: ContextTypes.DEFAULT_TYPE, minutes: int) -> None:
-    """ذخیره زمان انتخاب شده"""
-    context.user_data["selected_time"] = minutes
-    context.user_data["awaiting_topic"] = True
-    
-    subject = context.user_data.get("selected_subject", "نامشخص")
-    
-    await update.message.reply_text(
-        f"⏱ زمان انتخاب شده: {format_time(minutes)}\n\n"
-        f"📚 درس: {subject}\n\n"
-        f"✏️ لطفا مبحث مطالعه را وارد کنید:\n"
-        f"(مثال: حل مسائل فصل ۳)"
-    )
-
-async def request_custom_time_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """درخواست زمان دلخواه"""
-    context.user_data["awaiting_custom_time"] = True
-    
-    await update.message.reply_text(
-        f"✏️ زمان دلخواه\n\n"
-        f"⏱ لطفا زمان را به دقیقه وارد کنید:\n"
-        f"(بین {MIN_STUDY_TIME} تا {MAX_STUDY_TIME} دقیقه)\n\n"
-        f"مثال: ۹۰ (برای ۱ ساعت و ۳۰ دقیقه)"
-    )
-
-async def complete_study_button(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
-    """اتمام جلسه مطالعه با دکمه"""
-    if "current_session" not in context.user_data:
-        await update.message.reply_text(
-            "❌ جلسه‌ای فعال نیست.",
-            reply_markup=get_main_menu_keyboard()
-        )
-        return
-    
-    session_id = context.user_data["current_session"]
-    jobs = context.job_queue.get_jobs_by_name(str(session_id))
-    for job in jobs:
-        job.schedule_removal()
-        logger.info(f"⏰ تایمر جلسه {session_id} لغو شد")
-    
-    session = complete_study_session(session_id)
-    
-    if session:
-        date_str, time_str = get_iran_time()
-        score = calculate_score(session["minutes"])
-        
-        rank, total_minutes = get_user_rank_today(user_id)
-        
-        rank_text = f"🏆 رتبه شما امروز: {rank}" if rank else ""
-        
-        time_info = ""
-        if session.get("planned_minutes") != session["minutes"]:
-            time_info = f"⏱ زمان واقعی: {format_time(session['minutes'])} (از {format_time(session['planned_minutes'])})"
-        else:
-            time_info = f"⏱ مدت: {format_time(session['minutes'])}"
-        
-        await update.message.reply_text(
-            f"✅ مطالعه تکمیل شد!\n\n"
-            f"📚 درس: {session['subject']}\n"
-            f"🎯 مبحث: {session['topic']}\n"
-            f"{time_info}\n"
-            f"🏆 امتیاز: +{score}\n"
-            f"📅 تاریخ: {date_str}\n"
-            f"🕒 زمان: {time_str}\n\n"
-            f"{rank_text}",
-            reply_markup=get_after_study_keyboard()
-        )
-        
-        context.user_data["last_subject"] = session['subject']
-        
-        # 🔴 اضافه شده: بررسی و اعطای پاداش
-        await check_and_reward_user(user_id, session_id, context)
-        
-    else:
-        await update.message.reply_text(
-            "❌ خطا در ثبت اطلاعات.",
-            reply_markup=get_main_menu_keyboard()
-        )
-    
-    context.user_data.pop("current_session", None)
-
-async def auto_complete_study(context) -> None:
-    """اتمام خودکار جلسه مطالعه بعد از اتمام زمان"""
-    job_data = context.job.data
-    session_id = job_data["session_id"]
-    chat_id = job_data["chat_id"]
-    user_id = job_data["user_id"]
-    
-    session = complete_study_session(session_id)
-    
-    if session:
-        date_str, time_str = get_iran_time()
-        score = calculate_score(session["minutes"])
-        
-        await context.bot.send_message(
-            chat_id,
-            f"⏰ <b>زمان به پایان رسید!</b>\n\n"
-            f"✅ مطالعه به صورت خودکار ثبت شد.\n\n"
-            f"📚 درس: {session['subject']}\n"
-            f"🎯 مبحث: {session['topic']}\n"
-            f"⏰ مدت: {format_time(session['minutes'])}\n"
-            f"🏆 امتیاز: +{score}\n"
-            f"📅 تاریخ: {date_str}\n"
-            f"🕒 زمان: {time_str}\n\n"
-            f"🎉 آفرین! یک جلسه مفید داشتید.",
-            reply_markup=get_main_menu_keyboard(),
-            parse_mode=ParseMode.HTML
-        )
-        
-        # 🔴 اضافه شده: بررسی و اعطای پاداش
-        await check_and_reward_user(user_id, session_id, context)
-        
-    else:
-        await context.bot.send_message(
-            chat_id,
-            "❌ خطا در ثبت خودکار جلسه.",
-            reply_markup=get_main_menu_keyboard()
-            )
-# -----------------------------------------------------------
-# توابع ثبت‌نام
-# -----------------------------------------------------------
-
-async def handle_registration_grade(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """پردازش مرحله پایه در ثبت‌نام"""
-    valid_grades = ["دهم", "یازدهم", "دوازدهم", "فارغ‌التحصیل", "دانشجو"]
-    
-    if text == "❌ لغو ثبت‌نام":
-        await update.message.reply_text(
-            "❌ ثبت‌نام لغو شد.\n\n"
-            "برای شروع مجدد /start را بزنید.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        context.user_data.clear()
-        return
-    
-    if text not in valid_grades:
-        await update.message.reply_text(
-            "❌ لطفا یکی از پایه‌های نمایش‌داده‌شده را انتخاب کنید.",
-            reply_markup=get_grade_keyboard()
-        )
-        return
-    
-    context.user_data["grade"] = text
-    context.user_data["registration_step"] = "field"
-    
-    await update.message.reply_text(
-        f"✅ پایه تحصیلی: **{text}**\n\n"
-        f"🧪 **لطفا رشته تحصیلی خود را انتخاب کنید:**",
-        reply_markup=get_field_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def handle_registration_field(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """پردازش مرحله رشته در ثبت‌نام"""
-    valid_fields = ["ریاضی", "انسانی", "تجربی", "سایر"]
-    
-    if text == "❌ لغو ثبت‌نام":
-        await update.message.reply_text(
-            "❌ ثبت‌نام لغو شد.\n\n"
-            "برای شروع مجدد /start را بزنید.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        context.user_data.clear()
-        return
-    
-    if text not in valid_fields:
-        await update.message.reply_text(
-            "❌ لطفا یکی از رشته‌های نمایش‌داده‌شده را انتخاب کنید.",
-            reply_markup=get_field_keyboard()
-        )
-        return
-    
-    context.user_data["field"] = text
-    context.user_data["registration_step"] = "message"
-    
-    await update.message.reply_text(
-        f"✅ اطلاعات شما:\n"
-        f"🎓 پایه: {context.user_data['grade']}\n"
-        f"🧪 رشته: {text}\n\n"
-        f"📝 **لطفا یک پیام کوتاه درباره خودتان بنویسید:**\n"
-        f"(حداکثر ۲۰۰ کاراکتر)\n\n"
-        f"مثال: علاقه‌مند به یادگیری و پیشرفت\n"
-        f"یا: دانش‌آموز علاقه‌مند به ریاضی\n\n"
-        f"برای رد شدن از این مرحله /skip را بزنید.",
-        reply_markup=get_cancel_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def handle_registration_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, text: str) -> None:
-    """پردازش مرحله پیام در ثبت‌نام"""
-    if text == "❌ لغو ثبت‌نام":
-        await update.message.reply_text(
-            "❌ ثبت‌نام لغو شد.\n\n"
-            "برای شروع مجدد /start را بزنید.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        context.user_data.clear()
-        return
-    
-    message = text[:200]
-    grade = context.user_data.get("grade")
-    field = context.user_data.get("field")
-    
-    if register_user(user_id, update.effective_user.username, grade, field, message):
-        await update.message.reply_text(
-            "✅ درخواست شما ثبت شد!\n\n"
-            "📋 اطلاعات ثبت‌نام:\n"
-            f"🎓 پایه: {grade}\n"
-            f"🧪 رشته: {field}\n"
-            f"📝 پیام: {message}\n\n"
-            "⏳ درخواست شما برای ادمین ارسال شد.\n"
-            "پس از تأیید، می‌توانید از ربات استفاده کنید.\n\n"
-            "برای بررسی وضعیت /start را بزنید.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-    else:
-        await update.message.reply_text(
-            "❌ خطا در ثبت اطلاعات.\n"
-            "لطفا مجدد تلاش کنید.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-    
-    context.user_data.clear()
-
-# -----------------------------------------------------------
-# توابع مطالعه
-# -----------------------------------------------------------
-
-async def handle_custom_subject(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """پردازش درس دلخواه"""
-    if len(text) < 2 or len(text) > 50:
-        await update.message.reply_text(
-            "❌ نام درس باید بین ۲ تا ۵۰ کاراکتر باشد.\n"
-            "لطفا مجدد وارد کنید:"
-        )
-        return
-    
-    context.user_data["selected_subject"] = text
-    context.user_data.pop("awaiting_custom_subject", None)
-    
-    await update.message.reply_text(
-        f"✅ درس انتخاب شده: **{text}**\n\n"
-        f"⏱ لطفا مدت زمان مطالعه را انتخاب کنید:",
-        reply_markup=get_time_selection_keyboard_reply(),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def handle_study_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, text: str) -> None:
-    """پردازش مبحث مطالعه"""
-    topic = text
-    subject = context.user_data.get("selected_subject", "نامشخص")
-    minutes = context.user_data.get("selected_time", 60)
-    
-    session_id = start_study_session(user_id, subject, topic, minutes)
-    
-    if session_id:
-        context.user_data["current_session"] = session_id
-        date_str, time_str = get_iran_time()
-        
-        await update.message.reply_text(
-            f"✅ تایمر شروع شد!\n\n"
-            f"📚 درس: {subject}\n"
-            f"🎯 مبحث: {topic}\n"
-            f"⏱ مدت: {format_time(minutes)}\n"
-            f"📅 تاریخ: {date_str}\n"
-            f"🕒 شروع: {time_str}\n\n"
-            f"⏳ تایمر در حال اجرا...\n\n"
-            f"برای اتمام زودتر دکمه زیر را بزنید:",
-            reply_markup=get_complete_study_keyboard()
-        )
-        
-        context.user_data.pop("awaiting_topic", None)
-        context.user_data.pop("selected_subject", None)
-        context.user_data.pop("selected_time", None)
-        
-        context.job_queue.run_once(
-            auto_complete_study,
-            minutes * 60,
-            data={"session_id": session_id, "chat_id": update.effective_chat.id, "user_id": user_id},
-            name=str(session_id)
-        )
-    else:
-        await update.message.reply_text(
-            "❌ خطا در شروع تایمر.\n"
-            "لطفا مجدد تلاش کنید.",
-            reply_markup=get_main_menu_keyboard()
-        )
-
-async def handle_custom_time(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """پردازش زمان دلخواه"""
-    try:
-        minutes = int(text)
-        if minutes < MIN_STUDY_TIME:
-            await update.message.reply_text(
-                f"❌ زمان باید حداقل {MIN_STUDY_TIME} دقیقه باشد."
-            )
-        elif minutes > MAX_STUDY_TIME:
-            await update.message.reply_text(
-                f"❌ زمان نباید بیشتر از {MAX_STUDY_TIME} دقیقه (۲ ساعت) باشد."
-            )
-        else:
-            context.user_data["selected_time"] = minutes
-            context.user_data["awaiting_topic"] = True
-            context.user_data.pop("awaiting_custom_time", None)
-            
-            subject = context.user_data.get("selected_subject", "نامشخص")
-            await update.message.reply_text(
-                f"⏱ زمان انتخاب شده: {format_time(minutes)}\n\n"
-                f"📚 درس: {subject}\n\n"
-                f"✏️ لطفا مبحث مطالعه را وارد کنید:\n"
-                f"(مثال: حل مسائل فصل ۳)"
-            )
-    except ValueError:
-        await update.message.reply_text(
-            "❌ لطفا یک عدد وارد کنید.\n"
-            f"(بین {MIN_STUDY_TIME} تا {MAX_STUDY_TIME} دقیقه)"
-        )
-
-# -----------------------------------------------------------
-# توابع ادمین
-# -----------------------------------------------------------
-
-async def admin_upload_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """آپلود فایل توسط ادمین"""
-    await update.message.reply_text(
-        "📤 آپلود فایل\n\n"
-        "روش‌های آپلود:\n\n"
-        "۱. دستوری سریع:\n"
-        "/addfile <پایه> <رشته> <درس> <مبحث>\n\n"
-        "مثال:\n"
-        "/addfile دوازدهم تجربی فیزیک دینامیک\n\n"
-        "۲. مرحله‌ای:\n"
-        "ابتدا اطلاعات را به صورت دستی وارد کنید.\n\n"
-        "لطفا اطلاعات را به فرمت زیر وارد کنید:\n"
-        "پایه،رشته،درس،مبحث\n\n"
-        "مثال: دوازدهم,تجربی,فیزیک,دینامیک"
-    )
-
-async def admin_show_requests(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش درخواست‌های ثبت‌نام"""
-    requests = get_pending_requests()
-    context.user_data["showing_requests"] = True
-    
-    if not requests:
-        await update.message.reply_text(
-            "📭 هیچ درخواست ثبت‌نامی در انتظار نیست.",
-            reply_markup=get_admin_keyboard_reply()
-        )
-        return
-    
-    # ساخت متن با HTML ایمن
-    text = f"📋 <b>درخواست‌های در انتظار:</b> {len(requests)}\n\n"
-    
-    for req in requests[:5]:  # فقط ۵ مورد اول
-        username = req['username'] or "نامشخص"
-        grade = req['grade'] or "نامشخص"
-        field = req['field'] or "نامشخص"
-        message = req['message'] or "بدون پیام"
-        user_id = req['user_id']
-        created_at = req['created_at']
-        
-        if isinstance(created_at, datetime):
-            date_str = created_at.strftime('%Y/%m/%d %H:%M')
-        else:
-            date_str = str(created_at)
-        
-        # فرار کردن متن برای HTML
-        safe_username = safe_html(username)
-        safe_grade = safe_html(grade)
-        safe_field = safe_html(field)
-        safe_date = safe_html(date_str)
-        
-        text += f"👤 <b>{safe_username}</b>\n"
-        text += f"🆔 آیدی: <code>{user_id}</code>\n"
-        text += f"🎓 {safe_grade} | 🧪 {safe_field}\n"
-        text += f"📅 {safe_date}\n"
-        
-        if message and message.strip():
-            safe_message = safe_html(message[:50])
-            text += f"📝 پیام: {safe_message}"
-            if len(message) > 50:
-                text += "..."
-            text += "\n"
-        
-        text += f"شناسه درخواست: <b>{req['request_id']}</b>\n\n"
-    
-    # اطمینان از اینکه همه تگ‌ها بسته شده‌اند
-    text = text.replace('<br/>', '<br>')
-    
-    await update.message.reply_text(
-        text,
-        reply_markup=get_admin_requests_keyboard(),
+        "✅ **رسید شما برای ادمین ارسال شد.**\n\n"
+        "🕐 پس از تایید، اشتراک شما فعال می‌شود.\n"
+        "📱 معمولاً طی ۲۴ ساعت تایید می‌شود.\n\n"
+        "🔙 برای بازگشت به منو، دکمه <b>🔙 بازگشت</b> رو بزن.",
+        reply_markup=get_main_keyboard(),
         parse_mode=ParseMode.HTML
     )
 
-async def admin_manage_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """مدیریت فایل‌های ادمین"""
-    context.user_data["managing_files"] = True
-    await update.message.reply_text(
-        "📁 مدیریت فایل‌ها\n\n"
-        "لطفا یک عملیات انتخاب کنید:",
-        reply_markup=get_admin_file_management_keyboard()
-    )
+# ==================== پروفایل ====================
 
-async def admin_show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """نمایش آمار ربات"""
-    context.user_data["showing_stats"] = True
-    
-    try:
-        query_users = """
-        SELECT 
-            COUNT(*) as total_users,
-            COUNT(CASE WHEN is_active THEN 1 END) as active_users,
-            COALESCE(SUM(total_study_time), 0) as total_study_minutes
-        FROM users
-        """
-        user_stats = db.execute_query(query_users, fetch=True)
-        
-        query_sessions = """
-        SELECT 
-            COUNT(*) as total_sessions,
-            COUNT(CASE WHEN completed THEN 1 END) as completed_sessions,
-            COALESCE(SUM(minutes), 0) as total_session_minutes
-        FROM study_sessions
-        """
-        session_stats = db.execute_query(query_sessions, fetch=True)
-        
-        query_files = """
-        SELECT 
-            COUNT(*) as total_files,
-            COALESCE(SUM(download_count), 0) as total_downloads,
-            COUNT(DISTINCT subject) as unique_subjects
-        FROM files
-        """
-        file_stats = db.execute_query(query_files, fetch=True)
-        
-        date_str, _ = get_iran_time()
-        query_today = """
-        SELECT 
-            COUNT(DISTINCT user_id) as active_today,
-            COALESCE(SUM(total_minutes), 0) as minutes_today
-        FROM daily_rankings
-        WHERE date = %s
-        """
-        today_stats = db.execute_query(query_today, (date_str,), fetch=True)
-        
-        text = f"📊 **آمار کامل ربات**\n\n"
-        text += f"📅 تاریخ: {date_str}\n\n"
-        
-        text += f"👥 **کاربران:**\n"
-        text += f"• کل کاربران: {user_stats[0]}\n"
-        text += f"• کاربران فعال: {user_stats[1]}\n"
-        text += f"• مجموع دقیقه مطالعه: {user_stats[2]:,}\n\n"
-        
-        text += f"⏰ **جلسات مطالعه:**\n"
-        text += f"• کل جلسات: {session_stats[0]}\n"
-        text += f"• جلسات تکمیل‌شده: {session_stats[1]}\n"
-        text += f"• مجموع زمان: {session_stats[2]:,} دقیقه\n\n"
-        
-        text += f"📁 **فایل‌ها:**\n"
-        text += f"• کل فایل‌ها: {file_stats[0]}\n"
-        text += f"• کل دانلودها: {file_stats[1]:,}\n"
-        text += f"• درس‌های منحصربه‌فرد: {file_stats[2]}\n\n"
-        
-        text += f"🎯 **امروز:**\n"
-        text += f"• کاربران فعال: {today_stats[0] if today_stats else 0}\n"
-        text += f"• مجموع زمان: {today_stats[1] if today_stats else 0} دقیقه\n"
-        
-        await update.message.reply_text(
-            text,
-            reply_markup=get_admin_keyboard_reply(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-    except Exception as e:
-        logger.error(f"خطا در دریافت آمار: {e}")
-        await update.message.reply_text(
-            "❌ خطا در دریافت آمار.",
-            reply_markup=get_admin_keyboard_reply()
-        )
-
-async def admin_delete_file_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """درخواست شناسه فایل برای حذف"""
-    await update.message.reply_text(
-        "🗑 حذف فایل\n\n"
-        "لطفا شناسه فایل را برای حذف وارد کنید:\n"
-        "(شناسه فایل را می‌توانید از لیست فایل‌ها مشاهده کنید)"
-    )
-    context.user_data["awaiting_file_id_to_delete"] = True
-
-async def admin_list_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """لیست فایل‌های ادمین"""
-    files = get_all_files()
-    
-    if not files:
-        await update.message.reply_text(
-            "📭 هیچ فایلی در سیستم وجود ندارد.",
-            reply_markup=get_admin_file_management_keyboard()
-        )
+async def handle_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
         return
     
-    text = f"📁 لیست فایل‌ها\n\nتعداد کل: {len(files)}\n\n"
-    for file in files[:10]:
-        text += f"📄 **{file['file_name']}**\n"
-        text += f"🆔 شناسه: {file['file_id']}\n"
-        text += f"🎓 {file['grade']} | 🧪 {file['field']}\n"
-        text += f"📚 {file['subject']}"
-        
-        if 'topic' in file and file['topic'] and file['topic'].strip():
-            text += f" - {file['topic'][:30]}\n"
-        else:
-            text += "\n"
-            
-        text += f"📥 {file['download_count']} دانلود | 📅 {file['upload_date']}\n\n"
-    
-    await update.message.reply_text(
-        text,
-        reply_markup=get_admin_file_management_keyboard(),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def admin_delete_file_process(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """پردازش حذف فایل"""
-    try:
-        file_id = int(text)
-        file_data = get_file_by_id(file_id)
-        
-        if not file_data:
-            await update.message.reply_text("❌ فایل یافت نشد.")
-            context.user_data.pop("awaiting_file_id_to_delete", None)
-            return
-        
-        if delete_file(file_id):
-            await update.message.reply_text(
-                f"✅ فایل حذف شد:\n\n"
-                f"📄 نام: {file_data['file_name']}\n"
-                f"🎓 پایه: {file_data['grade']}\n"
-                f"🧪 رشته: {file_data['field']}\n"
-                f"📚 درس: {file_data['subject']}",
-                reply_markup=get_admin_file_management_keyboard()
-            )
-        else:
-            await update.message.reply_text(
-                "❌ خطا در حذف فایل.",
-                reply_markup=get_admin_file_management_keyboard()
-            )
-        
-        context.user_data.pop("awaiting_file_id_to_delete", None)
-        
-    except ValueError:
-        await update.message.reply_text("❌ شناسه باید عددی باشد.")
-
-async def admin_approve_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """تأیید همه درخواست‌ها"""
-    requests = get_pending_requests()
-    
-    if not requests:
-        await update.message.reply_text("📭 هیچ درخواستی برای تأیید وجود ندارد.")
+    user_data = get_user_data(str(update.effective_user.id))
+    if not user_data:
+        await update.message.reply_text("❌ اطلاعات شما یافت نشد.")
         return
     
-    approved_count = 0
-    for req in requests:
-        if approve_registration(req["request_id"], "تأیید دسته‌جمعی"):
-            approved_count += 1
-            try:
-                await context.bot.send_message(
-                    req["user_id"],
-                    "🎉 **درخواست شما تأیید شد!**\n\n"
-                    "✅ اکنون می‌توانید از ربات استفاده کنید.\n"
-                    "برای شروع /start را بزنید."
-                )
-            except Exception as e:
-                logger.error(f"خطا در اطلاع به کاربر {req['user_id']}: {e}")
+    quota = get_user_quota(user_id)
+    remaining = get_remaining_messages(user_id)
     
-    await update.message.reply_text(
-        f"✅ {approved_count} درخواست تأیید شد.",
-        reply_markup=get_admin_keyboard_reply()
-    )
+    plan_names = {
+        "trial": "🌱 آزمایشی",
+        "basic": "📘 پایه", 
+        "premium": "🚀 پیشرفته"
+    }
+    
+    plan_type = quota.get("plan_type", "trial") if quota else "trial"
+    plan_name = plan_names.get(plan_type, "آزمایشی")
+    
+    level = user_data.get('plan_level', 0)
+    level_name = get_plan_level_name(level)
+    level_emoji = get_plan_level_emoji(level)
+    
+    text = f"""👤 **پروفایل کاربری**
 
-async def admin_reject_all_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """درخواست دلیل برای رد همه"""
-    await update.message.reply_text(
-        "❌ رد همه درخواست‌ها\n\n"
-        "لطفا دلیل رد همه درخواست‌ها را وارد کنید:"
-    )
-    context.user_data["rejecting_all"] = True
+📌 نام: {user_data.get('full_name', 'نامشخص')}
+🎯 هدف: {user_data.get('goal', 'نامشخص')}
+🎓 پایه: {user_data.get('grade', 'نامشخص')}
+🧪 رشته: {user_data.get('field', 'نامشخص')}
 
-async def admin_view_request_details_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """درخواست شناسه برای مشاهده جزئیات"""
-    await update.message.reply_text(
-        "👁 مشاهده جزئیات درخواست\n\n"
-        "لطفا شناسه درخواست را وارد کنید:"
-    )
-    context.user_data["awaiting_request_id"] = True
+📊 سطح برنامه: {level_emoji} {level_name}
+💬 پیام‌های AI باقی‌مانده: {remaining}
+💰 اشتراک: {plan_name}
 
-async def admin_view_request_details(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """نمایش جزئیات یک درخواست"""
-    try:
-        request_id = int(text)
-        requests = get_pending_requests()
-        request = next((r for r in requests if r["request_id"] == request_id), None)
-        
-        if not request:
-            await update.message.reply_text("❌ درخواست یافت نشد.")
-            context.user_data.pop("awaiting_request_id", None)
-            return
-        
-        username = request['username'] or "نامشخص"
-        grade = request['grade'] or "نامشخص"
-        field = request['field'] or "نامشخص"
-        message = request['message'] or "بدون پیام"
-        
-        text = (
-            f"📋 جزئیات درخواست #{request_id}\n\n"
-            f"👤 کاربر: **{html.escape(username)}**\n"
-            f"🆔 آیدی: `{request['user_id']}`\n"
-            f"🎓 پایه: {html.escape(grade)}\n"
-            f"🧪 رشته: {html.escape(field)}\n"
-            f"📅 تاریخ درخواست: {html.escape(request['created_at'].strftime('%Y/%m/%d %H:%M'))}\n\n"
-            f"📝 پیام کاربر:\n"
-            f"_{html.escape(message)}_\n\n"
-            f"برای تأیید یا رد، از دستورات استفاده کنید."
-        )
-        
-        await update.message.reply_text(
-            text,
-            reply_markup=get_admin_requests_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        context.user_data.pop("awaiting_request_id", None)
-        
-    except ValueError:
-        await update.message.reply_text("❌ شناسه باید عددی باشد.")
+📅 تاریخ ثبت‌نام: {user_data.get('created_at', 'نامشخص')}
 
-async def admin_reject_all_process(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """پردازش رد همه درخواست‌ها"""
-    requests = get_pending_requests()
-    
-    if not requests:
-        await update.message.reply_text("📭 هیچ درخواستی برای رد وجود ندارد.")
-        context.user_data.pop("rejecting_all", None)
-        return
-    
-    admin_note = text
-    rejected_count = 0
-    
-    for req in requests:
-        if reject_registration(req["request_id"], admin_note):
-            rejected_count += 1
-    
-    await update.message.reply_text(
-        f"❌ {rejected_count} درخواست رد شد.\n"
-        f"دلیل: {admin_note}",
-        reply_markup=get_admin_keyboard_reply()
-    )
-    
-    context.user_data.pop("rejecting_all", None)
+---
 
-async def handle_file_description(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """پردازش توضیح فایل"""
-    context.user_data["awaiting_file"]["description"] = text
-    context.user_data["awaiting_file_document"] = True
+📝 برای تغییر اطلاعات، با ادمین تماس بگیرید.
+"""
     
-    file_info = context.user_data["awaiting_file"]
-    await update.message.reply_text(
-        f"✅ توضیح ذخیره شد.\n\n"
-        f"📤 آماده آپلود فایل:\n\n"
-        f"🎓 پایه: {file_info['grade']}\n"
-        f"🧪 رشته: {file_info['field']}\n"
-        f"📚 درس: {file_info['subject']}\n"
-        f"📝 توضیح: {text}\n\n"
-        f"📎 لطفا فایل را ارسال کنید..."
-    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-async def handle_reject_request(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """پردازش رد درخواست"""
-    request_id = context.user_data["rejecting_request"]
-    admin_note = text
-    
-    if reject_registration(request_id, admin_note):
-        await update.message.reply_text(
-            f"✅ درخواست #{request_id} رد شد.\n"
-            f"دلیل: {admin_note}"
-        )
-    else:
-        await update.message.reply_text(
-            "❌ خطا در رد درخواست."
-        )
-    
-    context.user_data.pop("rejecting_request", None)
+# ==================== دستورات ادمین ====================
 
-async def handle_user_update_grade(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """پردازش بروزرسانی پایه کاربر"""
-    valid_grades = ["دهم", "یازدهم", "دوازدهم", "فارغ‌التحصیل", "دانشجو"]
-    
-    if text not in valid_grades:
-        await update.message.reply_text(
-            f"❌ پایه نامعتبر!\n"
-            f"پایه‌های مجاز: {', '.join(valid_grades)}\n"
-            f"لطفا مجدد وارد کنید:"
-        )
-        return
-    
-    context.user_data["new_grade"] = text
-    context.user_data["awaiting_user_grade"] = False
-    context.user_data["awaiting_user_field"] = True
-    
-    await update.message.reply_text(
-        f"✅ پایه ذخیره شد: {text}\n\n"
-        f"لطفا رشته جدید را وارد کنید:\n"
-        f"(تجربی، ریاضی، انسانی، هنر، سایر)"
-    )
-
-async def handle_user_update_field(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """پردازش بروزرسانی رشته کاربر"""
-    valid_fields = ["تجربی", "ریاضی", "انسانی", "هنر", "سایر"]
-    
-    if text not in valid_fields:
-        await update.message.reply_text(
-            f"❌ رشته نامعتبر!\n"
-            f"رشته‌های مجاز: {', '.join(valid_fields)}\n"
-            f"لطفا مجدد وارد کنید:"
-        )
-        return
-    
-    new_field = text
-    new_grade = context.user_data["new_grade"]
-    target_user_id = context.user_data["editing_user"]
-    
-    if update_user_info(target_user_id, new_grade, new_field):
-        query = """
-        SELECT username, grade, field 
-        FROM users 
-        WHERE user_id = %s
-        """
-        user_info = db.execute_query(query, (target_user_id,), fetch=True)
-        
-        if user_info:
-            username, old_grade, old_field = user_info
-            
-            try:
-                await context.bot.send_message(
-                    target_user_id,
-                    f"📋 **اطلاعات حساب شما بروزرسانی شد!**\n\n"
-                    f"👤 کاربر: {username}\n"
-                    f"🎓 پایه قبلی: {old_grade} → جدید: {new_grade}\n"
-                    f"🧪 رشته قبلی: {old_field} → جدید: {new_field}\n\n"
-                    f"✅ تغییرات توسط ادمین اعمال شد.\n"
-                    f"فایل‌های در دسترس شما مطابق با پایه و رشته جدید به‌روزرسانی شدند."
-                )
-            except Exception as e:
-                logger.warning(f"⚠️ خطا در اطلاع به کاربر {target_user_id}: {e}")
-            
-            await update.message.reply_text(
-                f"✅ اطلاعات کاربر بروزرسانی شد:\n\n"
-                f"👤 کاربر: {username}\n"
-                f"🆔 آیدی: {target_user_id}\n"
-                f"🎓 پایه: {old_grade} → {new_grade}\n"
-                f"🧪 رشته: {old_field} → {new_field}",
-                reply_markup=get_main_menu_keyboard()
-            )
-        else:
-            await update.message.reply_text(
-                f"✅ اطلاعات کاربر بروزرسانی شد:\n\n"
-                f"🆔 آیدی: {target_user_id}\n"
-                f"🎓 پایه جدید: {new_grade}\n"
-                f"🧪 رشته جدید: {new_field}",
-                reply_markup=get_main_menu_keyboard()
-            )
-    else:
-        await update.message.reply_text(
-            "❌ خطا در بروزرسانی اطلاعات کاربر.",
-            reply_markup=get_main_menu_keyboard()
-        )
-    
-    context.user_data.pop("editing_user", None)
-    context.user_data.pop("new_grade", None)
-    context.user_data.pop("awaiting_user_field", None)
-
-# -----------------------------------------------------------
-# هندلرهای فایل
-# -----------------------------------------------------------
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پردازش فایل‌های ارسالی"""
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    document = update.message.document
-    
-    if ("awaiting_file" in context.user_data or "awaiting_file_document" in context.user_data) and is_admin(user_id):
-        
-        if "awaiting_file" not in context.user_data:
-            await update.message.reply_text("❌ ابتدا اطلاعات فایل را وارد کنید.")
-            return
-        
-        file_info = context.user_data["awaiting_file"]
-        
-        if not validate_file_type(document.file_name):
-            await update.message.reply_text(
-                f"❌ نوع فایل مجاز نیست.\n\n"
-                f"✅ فرمت‌های مجاز:\n"
-                f"PDF, DOC, DOCX, PPT, PPTX, XLS, XLSX\n"
-                f"TXT, MP4, MP3, JPG, JPEG, PNG, ZIP, RAR"
-            )
-            return
-        
-        file_size_limit = get_file_size_limit(document.file_name)
-        if document.file_size > file_size_limit:
-            size_mb = file_size_limit / (1024 * 1024)
-            await update.message.reply_text(
-                f"❌ حجم فایل زیاد است.\n"
-                f"حداکثر حجم برای این نوع فایل: {size_mb:.1f} MB"
-            )
-            return
-        
-        file_data = add_file(
-            grade=file_info["grade"],
-            field=file_info["field"],
-            subject=file_info["subject"],
-            topic=file_info["topic"],
-            description=file_info.get("description", ""),
-            telegram_file_id=document.file_id,
-            file_name=document.file_name,
-            file_size=document.file_size,
-            mime_type=document.mime_type,
-            uploader_id=user_id
-        )
-        
-        if file_data:
-            await update.message.reply_text(
-                f"✅ فایل با موفقیت آپلود شد!\n\n"
-                f"📄 نام: {file_data['file_name']}\n"
-                f"📦 حجم: {file_data['file_size'] // 1024} KB\n"
-                f"🎓 پایه: {file_data['grade']}\n"
-                f"🧪 رشته: {file_data['field']}\n"
-                f"📚 درس: {file_data['subject']}\n"
-                f"🎯 مبحث: {file_data['topic']}\n"
-                f"🆔 کد فایل: FD-{file_data['file_id']}\n\n"
-                f"این فایل در دسترس دانش‌آموزان مرتبط قرار گرفت."
-            )
-        else:
-            await update.message.reply_text("❌ خطا در آپلود فایل.")
-        
-        context.user_data.pop("awaiting_file", None)
-        context.user_data.pop("awaiting_file_description", None)
-        context.user_data.pop("awaiting_file_document", None)
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ دسترسی denied.")
         return
     
-    await update.message.reply_text("📎 فایل دریافت شد.")
+    await update.message.reply_text(
+        "👨‍💼 **پنل ادمین**\n\n"
+        "📝 /advice - ثبت توصیه جدید\n"
+        "📊 /stats - آمار کلی\n"
+        "🧠 /testai - تست AI\n"
+        "📋 /listadvice - لیست توصیه‌ها\n"
+        "🗑 /removeadvice [id] - حذف توصیه\n"
+        "📊 /aistats - آمار مصرف AI\n"
+        "✅ /approve [user_id] - تایید اشتراک کاربر\n"
+        "📸 /payments - مشاهده پرداخت‌های در انتظار",
+        parse_mode=ParseMode.HTML
+    )
 
-# -----------------------------------------------------------
-# توابع زمان‌بندی شده
-# -----------------------------------------------------------
+async def advice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "📝 **ثبت توصیه جدید**\n\n"
+            "توصیه خود را به صورت آزاد بنویس:\n"
+            "/advice متن توصیه\n\n"
+            "مثال:\n"
+            "/advice دانش‌آموزان کنکوری باید روزانه ۴۵ دقیقه ریاضی کار کنن"
+        )
+        return
+    
+    admin_text = " ".join(context.args)
+    await update.message.reply_text("🧠 در حال پردازش توصیه با AI...")
+    processed = process_admin_advice_with_ai(admin_text)
+    
+    if not processed:
+        await update.message.reply_text("❌ خطا در پردازش توصیه.")
+        return
+    
+    saved = 0
+    for advice in processed:
+        advice["created_by"] = user_id
+        result = save_advice(advice)
+        if result:
+            saved += 1
+    
+    await update.message.reply_text(
+        f"✅ {saved} توصیه با موفقیت ثبت شد!\n\n"
+        f"📋 برای مشاهده لیست: /listadvice"
+    )
 
+async def list_advice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    results = execute_query(
+        """SELECT id, topic, label, advice, priority, is_active, usage_count
+           FROM advisory_rules 
+           ORDER BY priority DESC, created_at DESC
+           LIMIT 20""",
+        fetchall=True
+    )
+    
+    if not results:
+        await update.message.reply_text("📭 هیچ توصیه‌ای ثبت نشده.")
+        return
+    
+    text = "📋 **لیست توصیه‌ها:**\n\n"
+    for r in results:
+        status = "✅" if r[5] else "❌"
+        text += f"{status} #{r[0]} | {r[1]} | {r[2]} | اولویت {r[3]} | {r[6]} بار استفاده\n"
+        text += f"   {r[4][:50]}...\n\n"
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# -----------------------------------------------------------
-# تابع اصلی
-# -----------------------------------------------------------
-def escape_html_for_telegram(text: str) -> str:
-    """فرار کردن کاراکترهای مخصوص برای HTML تلگرام"""
-    return html.escape(text)
-def safe_html(text: str) -> str:
-    """تبدیل ایمن متن به HTML برای تلگرام"""
-    if not text:
-        return ""
+async def remove_advice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
     
-    # فرار کردن کاراکترهای HTML
-    text = html.escape(text)
-    
-    # حذف تگ <br> و استفاده از \n به جای آن
-    text = text.replace('<br>', '\n')
-    
-    return text
-def main() -> None:
-    """تابع اصلی اجرای ربات"""
-    application = Application.builder().token(TOKEN).build()
-    
-    # Job زمان‌بندی شده برای گزارش‌ها
-    application.job_queue.run_daily(
-        send_midday_report,
-        time=dt_time(hour=15, minute=0, second=0, tzinfo=IRAN_TZ),  # 15:00
-        days=(0, 1, 2, 3, 4, 5, 6),
-        name="midday_report"
-    )
-    
-    application.job_queue.run_daily(
-        send_night_report,
-        time=dt_time(hour=23, minute=0, second=0, tzinfo=IRAN_TZ),  # 23:00
-        days=(0, 1, 2, 3, 4, 5, 6),
-        name="night_report"
-    )
-    
-    # Job برای پیام‌های تشویقی رندوم (هر روز ساعت 14:00)
-    application.job_queue.run_daily(
-        send_random_encouragement,
-        time=dt_time(hour=1, minute=0, second=0, tzinfo=IRAN_TZ),  # 14:00
-        days=(0, 1, 2, 3, 4, 5, 6),
-        name="random_encouragement"
-    )
-    
-    # همچنین یک Job تکرارشونده برای ارسال رندوم در طول روز
-    application.job_queue.run_repeating(
-        send_random_encouragement,
-        interval=21600,  # هر 6 ساعت
-        first=10,
-        name="periodic_encouragement"
-    )
-    
-    # ... بقیه کدهای main() بدون تغییر ...
+    if not context.args:
+        await update.message.reply_text("❌ لطفاً ID توصیه را وارد کن: /removeadvice 5")
+        return
     
     try:
-        print("\n📝 ثبت هندلرهای دستورات...")
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("admin", admin_command))
-        application.add_handler(CommandHandler("active", active_command))
-        application.add_handler(CommandHandler("deactive", deactive_command))
-        application.add_handler(CommandHandler("addfile", addfile_command))
-        application.add_handler(CommandHandler("skip", skip_command))
-        application.add_handler(CommandHandler("updateuser", updateuser_command))
-        application.add_handler(CommandHandler("userinfo", userinfo_command))
-        application.add_handler(CommandHandler("broadcast", broadcast_command))
-        application.add_handler(CommandHandler("sendtop", sendtop_command))
-        application.add_handler(CommandHandler("users", users_command))
-        application.add_handler(CommandHandler("send", send_command))
-        print("   ✓ 11 دستور اصلی ثبت شد")
-        
-        
-        # در تابع main() به بخش دستورات دیباگ اضافه کنید:
-        print("\n🔍 ثبت دستورات دیباگ...")
-        application.add_handler(CommandHandler("sessions", debug_sessions_command))
-        application.add_handler(CommandHandler("debugfiles", debug_files_command))
-        application.add_handler(CommandHandler("checkdb", check_database_command))
-        application.add_handler(CommandHandler("debugmatch", debug_user_match_command))
-        application.add_handler(CommandHandler("dailystats", debug_daily_stats_command))  # اضافه کردن این خط
-        print("   ✓ 5 دستور دیباگ ثبت شد")
-        
-        print("\n📨 ثبت هندلرهای پیام و فایل...")
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-        application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-        print("   ✓ هندلرهای متن و فایل ثبت شد")
-         
-        print("\n🎫 ثبت دستورات سیستم کوپن...")
-        application.add_handler(CommandHandler("set_card", set_card_command))
-        application.add_handler(CommandHandler("coupon_requests", coupon_requests_command))
-        application.add_handler(CommandHandler("verify_coupon", verify_coupon_command))
-        application.add_handler(CommandHandler("coupon_stats", coupon_stats_command))
-        print("   ✓ 4 دستور جدید کوپن ثبت شد")
-        
-        application.add_handler(MessageHandler(filters.PHOTO, handle_payment_photo))
-        print("   ✓ هندلرهای متن، فایل و عکس ثبت شد")
-        application.add_handler(CommandHandler("debug_all_requests", debug_all_requests_command))
-        application.add_handler(CommandHandler("check_stats", check_my_stats_command))
-        # در تابع main() به بخش دستورات اضافه کنید:
-        print("\n🎫 ثبت دستورات نیم‌کوپن...")
-        application.add_handler(CommandHandler("combine_coupons", combine_coupons_command))
-        application.add_handler(CommandHandler("my_coupons", my_coupons_command))
-        print("   ✓ 2 دستور نیم‌کوپن ثبت شد")
-        
-        print("\n" + "=" * 70)
-        print("🤖 ربات Focus Todo آماده اجراست!")
-        print("=" * 70)
-        print(f"👨‍💼 ادمین‌ها: {ADMIN_IDS}")
-        print(f"⏰ حداکثر زمان مطالعه: {MAX_STUDY_TIME} دقیقه")
-        print(f"🗄️  دیتابیس: {DB_CONFIG['database']} @ {DB_CONFIG['host']}:{DB_CONFIG['port']}")
-        print(f"🌍 منطقه زمانی: ایران ({IRAN_TZ})")
-        print(f"🔑 توکن: {TOKEN[:10]}...{TOKEN[-10:]}")
-        print("=" * 70)
-        print("🔄 شروع Polling...")
-        print("📱 ربات اکنون در حال گوش دادن به پیام‌هاست")
-        print("⚠️  برای توقف: Ctrl + C فشار دهید")
-        print("=" * 70 + "\n")
-        
-        logger.info("🚀 ربات شروع به کار کرد - Polling فعال شد")
-        
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            poll_interval=2.0,
-            timeout=30
-        )
-        
-        print("\nℹ️  Polling متوقف شد. ربات خاموش شد.")
-        
-    except KeyboardInterrupt:
-        print("\n\n⏹️  ربات توسط کاربر متوقف شد (Ctrl+C)")
-        logger.info("ربات توسط کاربر متوقف شد")
-    except Exception as e:
-        logger.error(f"❌ خطای بحرانی: {e}", exc_info=True)
-        print(f"\n❌ خطای بحرانی در اجرای ربات:")
-        print(f"   {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
+        advice_id = int(context.args[0])
+        execute_query("UPDATE advisory_rules SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (advice_id,))
+        await update.message.reply_text(f"🗑 توصیه #{advice_id} غیرفعال شد.")
+    except:
+        await update.message.reply_text("❌ ID نامعتبر.")
 
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    users = execute_query("SELECT COUNT(*) FROM users", fetch=True)
+    onboarded = execute_query("SELECT COUNT(*) FROM users WHERE is_onboarded = TRUE", fetch=True)
+    activities = execute_query("SELECT COUNT(*) FROM activity_log", fetch=True)
+    advice = execute_query("SELECT COUNT(*) FROM advisory_rules WHERE is_active = TRUE", fetch=True)
+    chat_msgs = execute_query("SELECT COUNT(*) FROM chat_messages", fetch=True)
+    payments = execute_query("SELECT COUNT(*) FROM pending_payments WHERE status = 'pending'", fetch=True)
+    
+    text = "📊 **آمار کلی**\n\n"
+    text += f"👥 کل کاربران: {users[0] if users else 0}\n"
+    text += f"✅ ثبت‌نام‌شده: {onboarded[0] if onboarded else 0}\n"
+    text += f"📋 فعالیت‌ها: {activities[0] if activities else 0}\n"
+    text += f"💡 توصیه‌های فعال: {advice[0] if advice else 0}\n"
+    text += f"💬 پیام‌های چت: {chat_msgs[0] if chat_msgs else 0}\n"
+    text += f"💰 پرداخت‌های در انتظار: {payments[0] if payments else 0}\n"
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+async def ai_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    results = execute_query(
+        """SELECT u.telegram_id, u.full_name, q.plan_type, q.daily_messages, q.last_reset,
+                  COUNT(c.id) as total_chats
+           FROM user_quota q
+           LEFT JOIN users u ON u.id = q.user_id
+           LEFT JOIN chat_messages c ON c.user_id = q.user_id AND c.role = 'assistant'
+           GROUP BY u.telegram_id, u.full_name, q.plan_type, q.daily_messages, q.last_reset
+           ORDER BY q.daily_messages DESC
+           LIMIT 20""",
+        fetchall=True
+    )
+    
+    if not results:
+        await update.message.reply_text("📭 هنوز مصرفی ثبت نشده.")
+        return
+    
+    text = "📊 **آمار مصرف AI**\n\n"
+    for r in results:
+        text += f"👤 {r[1] or r[0]}: {r[2] or 'trial'} | امروز: {r[3] or 0} | کل: {r[5] or 0}\n"
+    
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+async def test_ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ دسترسی denied.")
+        return
+    
+    await update.message.reply_text("🧠 در حال تست AI...")
+    try:
+        start = time.time()
+        response = await call_ai("سلام، فقط بگو 'AI وصل است' به فارسی", max_tokens=20, temperature=0.1)
+        elapsed = time.time() - start
+        if response:
+            await update.message.reply_text(
+                f"✅ **AI وصل است!**\n\n"
+                f"⏱ زمان پاسخ: {elapsed:.2f} ثانیه\n"
+                f"📝 پاسخ: {response}\n"
+                f"📌 مدل: {AI_MODEL}"
+            )
+        else:
+            await update.message.reply_text("❌ AI پاسخ نداد.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطا: {str(e)[:200]}")
+
+# ==================== هندلر اصلی ====================
+
+async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text.strip()
+    
+    # دکمه‌های تایید/رد تغییرات
+    if text == "✅ تایید تغییر":
+        if context.user_data.get("pending_change"):
+            await apply_pending_change(update, context)
+            return
+        else:
+            await update.message.reply_text("❌ هیچ تغییر در انتظار تاییدی وجود ندارد.")
+            return
+    
+    if text == "❌ رد تغییر":
+        if context.user_data.get("pending_change"):
+            await reject_pending_change(update, context)
+            return
+        else:
+            await update.message.reply_text("❌ هیچ تغییری برای رد کردن وجود ندارد.")
+            return
+    
+    if text == "🗑 بله، همه را پاک کن":
+        if context.user_data.get("pending_change") and context.user_data["pending_change"].get("action") == "clear":
+            await apply_pending_change(update, context)
+            return
+        else:
+            await update.message.reply_text("❌ هیچ عملیات پاک‌کردنی در انتظار تایید نیست.")
+            return
+    
+    if text == "❌ نه، لغو":
+        if context.user_data.get("pending_change") and context.user_data["pending_change"].get("action") == "clear":
+            await reject_pending_change(update, context)
+            return
+    
+    if text in ["✅ بله، حذف کن", "❌ نه، لغو"]:
+        await handle_confirm_delete(update, context)
+        return
+    
+    if text == "📝 برنامه امروز":
+        await handle_today_plan(update, context)
+    elif text == "📊 گزارش":
+        await handle_report(update, context)
+    elif text == "📅 تقویم":
+        await handle_calendar(update, context)
+    elif text == "💬 چت با AI":
+        await handle_ai_chat(update, context)
+    elif text == "💰 خرید اشتراک":
+        await handle_subscription(update, context)
+    elif text == "👤 پروفایل":
+        await handle_profile(update, context)
+    elif text == "🔙 برگشت به حالت قبل":
+        await handle_undo(update, context)
+    else:
+        await update.message.reply_text("❓ لطفاً از دکمه‌های منو استفاده کن.", reply_markup=get_main_keyboard())
+
+async def handle_text_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """هندلر اصلی برای تمام پیام‌های متنی که در سایر هندلرها نیستند"""
+    text = update.message.text.strip()
+    
+    # ==================== اولویت ۱: بررسی حالت ثبت‌نام ====================
+    step = context.user_data.get("onboarding_step")
+    if step is not None:
+        await onboarding_handler(update, context)
+        return
+    
+    # ==================== اولویت ۲: دریافت user_id ====================
+    user_id = get_user_id_by_telegram(update.effective_user.id)
+    if not user_id:
+        if text == "🔄 شروع مجدد":
+            await start_command(update, context)
+            return
+        await update.message.reply_text("❌ لطفاً اول /start رو بزن.")
+        return
+    
+    # ==================== اولویت ۳: دکمه‌های تایید/رد تغییرات ====================
+    if text == "✅ تایید تغییر":
+        if context.user_data.get("pending_change"):
+            await apply_pending_change(update, context)
+            return
+        else:
+            await update.message.reply_text("❌ هیچ تغییر در انتظار تاییدی وجود ندارد.")
+            return
+    
+    if text == "❌ رد تغییر":
+        if context.user_data.get("pending_change"):
+            await reject_pending_change(update, context)
+            return
+        else:
+            await update.message.reply_text("❌ هیچ تغییری برای رد کردن وجود ندارد.")
+            return
+    
+    # ==================== اولویت ۴: دکمه‌های پاک کردن همه ====================
+    if text == "🗑 بله، همه را پاک کن":
+        if context.user_data.get("pending_change") and context.user_data["pending_change"].get("action") == "clear":
+            await apply_pending_change(update, context)
+            return
+        else:
+            await update.message.reply_text("❌ هیچ عملیات پاک‌کردنی در انتظار تایید نیست.")
+            return
+    
+    if text == "❌ نه، لغو":
+        if context.user_data.get("pending_change") and context.user_data["pending_change"].get("action") == "clear":
+            await reject_pending_change(update, context)
+            return
+    
+    # ==================== اولویت ۵: دکمه‌های تایید حذف ====================
+    if text in ["✅ بله، حذف کن", "❌ نه، لغو"]:
+        await handle_confirm_delete(update, context)
+        return
+    
+    # ==================== اولویت ۶: دکمه‌های عمومی منو ====================
+    if text in ["📝 برنامه امروز", "📊 گزارش", "📅 تقویم", "💬 چت با AI", "💰 خرید اشتراک", "👤 پروفایل", "🔙 برگشت به حالت قبل"]:
+        await handle_main_menu(update, context)
+        return
+    
+    # ==================== اولویت ۷: دکمه‌های برنامه ====================
+    plan_buttons = [
+        "✅ تایید برنامه", "✅ اتمام برنامه", "✏️ ویرایش برنامه",
+        "✏️ ویرایش دستی", "✏️ ویرایش آزاد (چت با AI)",
+        "➕ اضافه کردن", "🔄 بازنشانی", "🔙 بازگشت",
+        "✅ تایید تغییرات", "❌ لغو تغییرات",
+        "⏱ تایمر", "▶️ ادامه تایمر", "⏹ توقف",
+        "✅ تکمیل", "🗑 حذف پارت"
+    ]
+    
+    if text in plan_buttons:
+        await handle_plan_actions(update, context)
+        return
+    
+    # ==================== اولویت ۸: کلیک روی پارت ====================
+    if "[" in text and "]" in text and re.search(r'\[(\d+)\]', text):
+        await handle_part_click(update, context)
+        return
+    
+    # ==================== اولویت ۹: تقویم ====================
+    if text.startswith("📅 "):
+        await handle_calendar_date(update, context)
+        return
+    
+    # ==================== اولویت ۱۰: حالت ساخت دستی ====================
+    if context.user_data.get("build_mode") == "manual":
+        step = context.user_data.get("build_step")
+        
+        if text == "🔙 بازگشت":
+            context.user_data.pop("build_mode", None)
+            context.user_data.pop("build_step", None)
+            context.user_data.pop("build_times", None)
+            context.user_data.pop("build_time_slots", None)
+            context.user_data.pop("build_activities", None)
+            await update.message.reply_text("🔙 بازگشت به صفحه اصلی", reply_markup=get_main_keyboard())
+            return
+        
+        if text == "✅ تایید":
+            if step == "times":
+                await handle_build_manual(update, context)
+            elif step == "activities":
+                await handle_build_manual_activities(update, context)
+            return
+        
+        if step == "times":
+            await handle_build_manual(update, context)
+        elif step == "activities":
+            await handle_build_manual_activities(update, context)
+        return
+    
+    # ==================== اولویت ۱۱: حالت اضافه کردن فعالیت ====================
+    if context.user_data.get("add_activity_step"):
+        step = context.user_data.get("add_activity_step")
+        
+        if text == "🔙 بازگشت":
+            context.user_data.pop("add_activity_step", None)
+            context.user_data.pop("add_activity_time_slot", None)
+            context.user_data.pop("add_activity_part_id", None)
+            context.user_data.pop("add_activity_text", None)
+            plan = context.user_data.get("current_plan", {})
+            if plan.get("parts"):
+                await show_parts_final(update, context, plan["parts"])
+            else:
+                await update.message.reply_text("🔙 بازگشت به منو", reply_markup=get_main_keyboard())
+            return
+        
+        if text == "✅ تایید":
+            if step == "enter_activity":
+                await handle_add_activity_enter(update, context)
+            return
+        
+        if step == "select_time":
+            await handle_add_activity_time(update, context)
+        elif step == "custom_time":
+            await handle_add_activity_custom_time(update, context)
+        elif step == "enter_activity":
+            await handle_add_activity_enter(update, context)
+        return
+    
+    # ==================== اولویت ۱۲: حالت چت با AI ====================
+    if context.user_data.get("mode") == "ai_chat":
+        await handle_ai_chat_message(update, context)
+        return
+    
+    # ==================== اولویت ۱۳: هر چیز دیگر = ارسال به چت AI ====================
+    remaining = get_remaining_messages(user_id)
+    
+    if remaining <= 0:
+        await update.message.reply_text(
+            "⛔️ **سقف پیام رایگان امروزت تموم شده!**\n\n"
+            "💡 برای ادامه چت با AI، اشتراک تهیه کن.\n"
+            "💰 از دکمه <b>خرید اشتراک</b> استفاده کن.",
+            reply_markup=get_main_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    context.user_data["mode"] = "ai_chat"
+    
+    user_data = get_user_data(str(update.effective_user.id))
+    context_summary = ""
+    if user_data:
+        weak = ", ".join(user_data.get("weak_subjects", [])) or "ندارد"
+        context_summary = f"هدف: {user_data.get('goal', 'نامشخص')} | درس ضعیف: {weak}"
+    
+    context.user_data["ai_context_summary"] = context_summary
+    
+    await update.message.reply_text(
+        "💬 **وارد حالت چت با AI شدید**\n\n"
+        f"📝 پیام شما: {text[:100]}{'...' if len(text) > 100 else ''}\n\n"
+        "🧠 در حال پردازش...",
+        reply_markup=get_ai_chat_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+    
+    await handle_ai_chat_message(update, context)
+
+async def nightly_report(context: ContextTypes.DEFAULT_TYPE) -> None:
+    users = execute_query(
+        "SELECT id, telegram_id, full_name FROM users WHERE is_active = TRUE AND is_onboarded = TRUE",
+        fetchall=True
+    )
+    if not users:
+        return
+    
+    today_shamsi = get_today_shamsi()
+    for user in users:
+        user_id = user[0]
+        telegram_id = user[1]
+        full_name = user[2] or "کاربر"
+        try:
+            activities = get_today_activities(user_id)
+            if not activities:
+                continue
+            total_time = sum(a.get("actual_duration", a.get("planned_duration", 0)) for a in activities)
+            done = len([a for a in activities if a.get("status") == "done"])
+            scores = [a.get("score") for a in activities if a.get("score") is not None]
+            avg_score = sum(scores) / len(scores) if scores else 0
+            text = f"🌙 **گزارش شبانه - {today_shamsi}**\n\n👤 {full_name}\n\n"
+            text += f"⏱ زمان مطالعه: {format_time_hours_minutes(total_time)}\n"
+            text += f"✅ تکمیل‌شده: {done}/{len(activities)}\n"
+            if scores:
+                text += f"📊 میانگین نمره: {avg_score:.1f}%\n"
+            text += "\n📋 **فعالیت‌ها:**\n"
+            for a in activities[-5:]:
+                status = "✅" if a.get("status") == "done" else "⬜"
+                text += f"{status} {a['subject']}"
+                if a.get('topic'):
+                    text += f" - {a['topic']}"
+                text += f" ({a.get('actual_duration', a.get('planned_duration', 0))} دقیقه)"
+                if a.get('score') is not None:
+                    text += f" - {a['score']:.0f}%"
+                text += "\n"
+            advice = get_active_advice(user_id)
+            if advice:
+                text += "\n💡 **توصیه فردا:**\n"
+                for a in advice[:2]:
+                    text += f"• {a['advice']}\n"
+            text += "\n🔜 فردا منتظرت هستم! 🌟"
+            await context.bot.send_message(telegram_id, text, parse_mode=ParseMode.HTML)
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            logger.error(f"خطا در ارسال گزارش به {telegram_id}: {e}")
+
+def process_admin_advice_with_ai(admin_text: str) -> List[Dict]:
+    prompt = f"""توصیه ادمین را به داده‌های ساختاریافته تبدیل کن:
+"{admin_text}"
+خروجی JSON:
+[
+  {{
+    "topic": "ریاضی",
+    "label": "همه",
+    "condition": "همیشه",
+    "advice": "روزانه ۴۵ دقیقه صبح مطالعه کن",
+    "priority": 9,
+    "time": "morning",
+    "frequency": "daily"
+  }}
+]"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        response = loop.run_until_complete(call_ai(prompt, max_tokens=1000, temperature=0.2))
+        loop.close()
+    except:
+        response = None
+    
+    if not response:
+        return []
+    try:
+        json_match = re.search(r'\[.*\]', response, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        return []
+    except:
+        return []
+
+# ==================== تابع اصلی ====================
+
+def main() -> None:
+    init_db_pool()
+    create_tables()
+    
+    application = Application.builder() \
+        .token(TOKEN) \
+        .connect_timeout(60.0) \
+        .read_timeout(60.0) \
+        .write_timeout(60.0) \
+        .pool_timeout(60.0) \
+        .build()
+    
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("advice", advice_command))
+    application.add_handler(CommandHandler("listadvice", list_advice_command))
+    application.add_handler(CommandHandler("removeadvice", remove_advice_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("aistats", ai_stats_command))
+    application.add_handler(CommandHandler("testai", test_ai_command))
+    
+    application.add_handler(MessageHandler(
+        filters.Regex("^(📝 برنامه امروز|📊 گزارش|📅 تقویم|💬 چت با AI|💰 خرید اشتراک|👤 پروفایل|🔙 برگشت به حالت قبل)$"),
+        handle_main_menu
+    ))
+    
+    application.add_handler(MessageHandler(
+        filters.Regex(r"^📅 \d{4}/\d{2}/\d{2}$"),
+        handle_calendar_date
+    ))
+    
+    application.add_handler(MessageHandler(
+        filters.Regex("^(✅ تایید برنامه|✅ اتمام برنامه|✏️ ویرایش برنامه|✏️ ویرایش دستی|✏️ ویرایش آزاد \\(چت با AI\\)|➕ اضافه کردن|🔄 بازنشانی|🔙 بازگشت|🔙 برگشت به حالت قبل|✅ تایید تغییرات|❌ لغو تغییرات|✅ تایید تغییر|❌ رد تغییر|🗑 بله، همه را پاک کن|❌ نه، لغو)$"),
+        handle_plan_actions
+    ))
+    
+    application.add_handler(MessageHandler(
+        filters.Regex("^(🧠 ساخت با AI|✏️ ساخت دستی)$"),
+        handle_plan_actions
+    ))
+    
+    application.add_handler(MessageHandler(
+        filters.Regex(r".*\[.*\].*"),
+        handle_part_click
+    ))
+    
+    application.add_handler(MessageHandler(
+        filters.PHOTO,
+        handle_payment_photo
+    ))
+    
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handle_text_other
+    ))
+    
+    job_queue = application.job_queue
+    if job_queue:
+        now = get_iran_now()
+        target = now.replace(hour=23, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        seconds_until = (target - now).total_seconds()
+        job_queue.run_repeating(nightly_report, interval=86400, first=seconds_until)
+        logger.info("✅ تسک‌های زمان‌بندی‌شده با زمان ایران تنظیم شدند")
+    
+    logger.info("🤖 ربات مطالعه هوشمند با تمام قابلیت‌ها شروع به کار کرد!")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
